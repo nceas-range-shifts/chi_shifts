@@ -1,0 +1,38 @@
+---
+title: Download tressors
+---
+
+From https://knb.ecoinformatics.org/view/doi:10.5063/F18K77KZ:
+
+* habitat_maps - get
+* pressure_raw - get
+* pressures_rescaled - skip
+* impacts_by_pressure - skip
+* cumulative_impact - skip
+
+For each data set, check for existence in the `data` folder, and if necessary, download/unzip.
+
+Make sure to manually add these to .gitignore!
+
+```{r}
+hab_maps_dir <- here::here('data/habitat_maps')
+if(!dir.exists(hab_maps_dir)) {
+  hab_maps_url <- 'https://knb.ecoinformatics.org/knb/d1/mn/v2/object/urn%3Auuid%3A8598ed8c-e906-47fb-8ba5-4edfed35df0f'
+  destfile <- here::here('hab_maps.zip')
+  download.file(hab_maps_url, destfile, mode = 'wb')
+  unzip(destfile, exdir = here::here('data'))
+  file.remove(destfile)
+}
+```
+
+```{r}
+prs_dir <- here::here('data/pressures_raw')
+if(!dir.exists(hab_maps_dir)) {
+  prs_url <- 'https://knb.ecoinformatics.org/knb/d1/mn/v2/object/urn%3Auuid%3Aebbdaaa0-bfc8-42c5-8973-76379dd65ee7'
+  destfile <- here::here('prs_raw.zip')
+  download.file(prs_url, destfile, mode = 'wb')
+  unzip(destfile, exdir = here::here('data'))
+  file.remove(destfile)
+}
+```
+

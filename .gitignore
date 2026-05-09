@@ -9,6 +9,11 @@
 # User-specific files
 .Ruserdata
 
+# data directories
+data/habitat_maps/*
+data/pressures_raw/*
+data/__MAC*
+
 # Example code in package build process
 *-Ex.R
 
