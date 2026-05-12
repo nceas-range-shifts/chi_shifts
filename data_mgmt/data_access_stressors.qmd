@@ -1,8 +1,15 @@
 ---
-title: Download tressors
+title: Download stressors
+author: "Casey O'Hara"
 ---
 
-From https://knb.ecoinformatics.org/view/doi:10.5063/F18K77KZ:
+## Summary
+
+Download stressor and habitat data from:
+
+* Halpern, B. S., Frazier, M., O’Hara, C. C., Vargas-Fonseca, O. A., & Lombard, A. T. (2025). Cumulative impacts to global marine ecosystems projected to more than double by midcentury. Science, 0(0), eadv2906. https://doi.org/10.1126/science.adv2906
+
+Data are hosted at https://knb.ecoinformatics.org/view/doi:10.5063/F18K77KZ:
 
 * habitat_maps - get
 * pressure_raw - get
@@ -10,9 +17,13 @@ From https://knb.ecoinformatics.org/view/doi:10.5063/F18K77KZ:
 * impacts_by_pressure - skip
 * cumulative_impact - skip
 
+## Methods
+
 For each data set, check for existence in the `data` folder, and if necessary, download/unzip.
 
 Make sure to manually add these to .gitignore!
+
+### Download habitat maps
 
 ```{r}
 hab_maps_dir <- here::here('data/habitat_maps')
@@ -30,6 +41,10 @@ if(!dir.exists(hab_maps_dir)) {
   unlink(cruft, recursive = TRUE)
 }
 ```
+
+### Download raw stressor maps
+
+These are not rescaled.
 
 ```{r}
 prs_dir <- here::here('data/pressures_raw')

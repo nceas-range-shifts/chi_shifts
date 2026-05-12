@@ -1,0 +1,77 @@
+---
+title: "Explore stressor projections"
+author: "Casey O'Hara"
+---
+
+```{r setup}
+library(tidyverse)
+library(terra)
+
+```
+
+## Summary
+
+Read in stressor layers, examine distributions through plots and statistical summaries.
+
+## Data
+
+Data and results are presented in: Halpern, B. S., Frazier, M., O’Hara, C. C., Vargas-Fonseca, O. A., & Lombard, A. T. (2025). Cumulative impacts to global marine ecosystems projected to more than double by midcentury. Science, 0(0), eadv2906. https://doi.org/10.1126/science.adv2906
+
+Data were retrieved from https://knb.ecoinformatics.org/view/doi%3A10.5063%2FF18K77KZ.
+
+## Habitats
+
+For each habitat layer, read in and plot.
+
+```{r}
+hab_fs <- list.files(here::here('data/habitat_maps'), pattern = '.tif', full.names = TRUE)
+r <- rast(hab_fs)
+
+plot(r)
+```
+
+## Stressors
+
+Identify stressor layers by name, time period, and scenario.  Then examine key layers.
+
+```{r}
+str_df <- data.frame(f = list.files(here::here('data/pressures_raw'), 
+                                    pattern = '.tif', full.names = TRUE)) %>%
+  mutate(str = str_remove_all(basename(f), '_ssp.+'),
+         scenario = str_extract(basename(f), 'ssp[0-9]+'),
+         period   = str_extract(basename(f), 'current|medium-term'))
+
+```
+
+### Current
+
+Plot current, ignoring air heat index for now.  Use spp585 scenario.
+
+```{r}
+str_current_df <- str_df %>%
+  filter(period == 'current') %>%
+  filter(str_detect(scenario, 'ssp5')) %>%
+  filter(!str_detect(str, 'air-heat'))
+
+r_current <- rast(str_current_df$f) %>% setNames(str_current_df$str)
+plot(r_current)
+
+```
+
+```{r}
+str_future_df <- str_df %>%
+  filter(period == 'medium-term') %>%
+  filter(str_detect(scenario, 'ssp5')) %>%
+  filter(!str_detect(str, 'air-heat'))
+
+r_future <- rast(str_future_df$f) %>% setNames(str_future_df$str)
+plot(r_future)
+
+```
+
+### Compare differences
+
+```{r}
+plot(r_future - r_current)
+```
+
