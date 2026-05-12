@@ -20,8 +20,14 @@ if(!dir.exists(hab_maps_dir)) {
   hab_maps_url <- 'https://knb.ecoinformatics.org/knb/d1/mn/v2/object/urn%3Auuid%3A8598ed8c-e906-47fb-8ba5-4edfed35df0f'
   destfile <- here::here('hab_maps.zip')
   download.file(hab_maps_url, destfile, mode = 'wb')
-  unzip(destfile, exdir = here::here('data'))
+  
+  exdir <- here::here('data')
+  unzip(destfile, exdir = exdir)
   file.remove(destfile)
+  
+  cruft <- list.files(exdir, recursive = TRUE, include.dirs = TRUE,
+                      full.names = TRUE, pattern = '.DS*|__MAC')
+  unlink(cruft, recursive = TRUE)
 }
 ```
 
@@ -31,8 +37,14 @@ if(!dir.exists(hab_maps_dir)) {
   prs_url <- 'https://knb.ecoinformatics.org/knb/d1/mn/v2/object/urn%3Auuid%3Aebbdaaa0-bfc8-42c5-8973-76379dd65ee7'
   destfile <- here::here('prs_raw.zip')
   download.file(prs_url, destfile, mode = 'wb')
-  unzip(destfile, exdir = here::here('data'))
+  
+  exdir <- here::here('data')
+  unzip(destfile, exdir = exdir)
   file.remove(destfile)
+  
+  cruft <- list.files(exdir, recursive = TRUE, include.dirs = TRUE,
+                      full.names = TRUE, pattern = '.DS*|__MAC')
+  unlink(cruft, recursive = TRUE)
 }
 ```
 
