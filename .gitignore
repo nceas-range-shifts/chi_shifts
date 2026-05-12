@@ -12,7 +12,9 @@
 # data directories
 data/habitat_maps/*
 data/pressures_raw/*
-data/__MAC*
+data/spp_vuln_framework_scores/*
+data/spp_vuln_framework_traits/*
+*.zip
 
 # Example code in package build process
 *-Ex.R
