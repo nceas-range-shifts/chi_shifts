@@ -1,0 +1,125 @@
+---
+title: Download data for functional entity traits
+author: "Casey O'Hara"
+format:
+  html:
+    embed-resources: true
+---
+
+## Summary
+
+Download traits used to calculate functional entities for:
+
+* O’Hara et al. (2024). Cumulative human impacts on global marine fauna highlight risk to biological and functional diversity. PLOS ONE, 19(9), e0309788. https://doi.org/10.1371/journal.pone.0309788
+
+Data are hosted at https://github.com/mapping-marine-spp-vuln/spp_vuln_mapping/tree/main/_data/traits_grouping:
+
+* [trait_length_cm.csv](https://raw.githubusercontent.com/mapping-marine-spp-vuln/spp_vuln_mapping/refs/heads/main/_data/traits_grouping/trait_length_cm.csv)
+* [trait_mobility.csv](https://raw.githubusercontent.com/mapping-marine-spp-vuln/spp_vuln_mapping/refs/heads/main/_data/traits_grouping/trait_mobility.csv)
+* [trait_reproduction.csv](https://raw.githubusercontent.com/mapping-marine-spp-vuln/spp_vuln_mapping/refs/heads/main/_data/traits_grouping/trait_reproduction.csv)
+* [trait_trophic_level.csv](https://raw.githubusercontent.com/mapping-marine-spp-vuln/spp_vuln_mapping/refs/heads/main/_data/traits_grouping/trait_trophic_level.csv)
+* [trait_water_col_position.csv](https://raw.githubusercontent.com/mapping-marine-spp-vuln/spp_vuln_mapping/refs/heads/main/_data/traits_grouping/trait_water_col_position.csv)
+
+The lookup table for correcting species names per WoRMS Aphia ID is located in https://github.com/mapping-marine-spp-vuln/spp_vuln_framework:
+
+* [update_sciname_aphia.csv](https://raw.githubusercontent.com/mapping-marine-spp-vuln/spp_vuln_framework/refs/heads/master/update/update_sciname_aphia.csv)
+
+## Methods
+
+```{r}
+library(tidyverse)
+```
+
+Read in all files, combine, and save out.
+
+Make sure to manually add these to .gitignore!
+
+### Load traits data
+
+```{r}
+fe_len  <- read_csv('https://raw.githubusercontent.com/mapping-marine-spp-vuln/spp_vuln_mapping/refs/heads/main/_data/traits_grouping/trait_length_cm.csv')
+fe_mob  <- read_csv('https://raw.githubusercontent.com/mapping-marine-spp-vuln/spp_vuln_mapping/refs/heads/main/_data/traits_grouping/trait_mobility.csv')
+fe_repr  <- read_csv('https://raw.githubusercontent.com/mapping-marine-spp-vuln/spp_vuln_mapping/refs/heads/main/_data/traits_grouping/trait_reproduction.csv')
+fe_troph <- read_csv('https://raw.githubusercontent.com/mapping-marine-spp-vuln/spp_vuln_mapping/refs/heads/main/_data/traits_grouping/trait_trophic_level.csv')
+fe_wcol  <- read_csv('https://raw.githubusercontent.com/mapping-marine-spp-vuln/spp_vuln_mapping/refs/heads/main/_data/traits_grouping/trait_water_col_position.csv')
+
+```
+
+### Identify species names with updated WoRMS accepted names/Aphia ID
+
+```{r}
+all_spp_vec <- c(fe_len$species, fe_mob$species, fe_repr$species, fe_troph$species, fe_wcol$species) %>%
+  unique() %>% sort()
+
+spp_vuln_aphia <- read_csv('https://raw.githubusercontent.com/mapping-marine-spp-vuln/spp_vuln_framework/refs/heads/master/update/update_sciname_aphia.csv') %>%
+  filter(!is.na(aphia_id))
+
+spp_trait_match <- data.frame(sciname_fe = all_spp_vec) %>%
+  inner_join(spp_vuln_aphia, by = c('sciname_fe' = 'sciname'))
+```
+
+### Deal with duplicate entries (i.e., multiple values from FishBase)
+
+```{r}
+resolve_numeric_dupes <- function(df) {
+  df_dupes <- df %>%
+    janitor::get_dupes(species, trait) %>%
+    summarize(.by = c(species, trait),
+              sd = sd(value), value = mean(value))
+  df_out <- df %>%
+    filter(!species %in% df_dupes$species) %>%
+    bind_rows(df_dupes)
+}
+
+fe_len1 <- resolve_numeric_dupes(fe_len) %>% rename(length_cm = value, sd_len = sd)
+fe_trp1 <- resolve_numeric_dupes(fe_troph) %>% rename(troph = value, sd_trp = sd)
+
+mob_dupes <- janitor::get_dupes(fe_mob, species)
+### duplicate mobility bins ok for now; collect into one obs
+
+resolve_chr_dupes <- function(df) {
+  df_dupes <- df %>%
+    janitor::get_dupes(species, trait) %>%
+    summarize(.by = c(species, trait),
+              value = paste0(sort(unique(value)), collapse = ';'))
+  df_out <- df %>%
+    filter(!species %in% df_dupes$species) %>%
+    bind_rows(df_dupes)
+}
+fe_mob1 <- resolve_chr_dupes(fe_mob) %>% rename(adult_mob = value, sd_mob = sd)
+
+fe_wcol1 <- resolve_chr_dupes(fe_wcol) %>%
+  rename(wcol_pos = value) %>% select(-source)
+### no duplicates found
+
+### drop numeric value column and allow for duplicate age_mat and fec bins
+fe_age_mat1 <- fe_repr %>%
+  filter(trait == 'age_mat') %>%
+  select(-source, -val_num) %>%
+  resolve_chr_dupes() %>%
+  rename(age_mat = value)
+
+fe_fec1 <- fe_repr %>%
+  filter(trait == 'fec') %>%
+  select(-source, -val_num) %>%
+  resolve_chr_dupes() %>%
+  rename(fec = value)
+
+```
+
+### update species name and add aphia_id
+
+```{r}
+fe_df <- fe_len1 %>%
+  full_join(fe_trp1, by = 'species') %>%
+  full_join(fe_mob1, by = 'species') %>%
+  full_join(fe_wcol1, by = 'species') %>%
+  full_join(fe_age_mat1, by = 'species') %>%
+  full_join(fe_fec1, by = 'species') %>%
+  select(-starts_with(c('trait', 'nspp', 'gf_level'))) %>%
+  inner_join(spp_trait_match, by = c('species' = 'sciname_fe')) %>%
+  select(-species, sciname = valid_sciname)
+
+write_csv(fe_df, here::here('data/funct_entity_traits/fe_spp_traits.csv'))
+```
+
