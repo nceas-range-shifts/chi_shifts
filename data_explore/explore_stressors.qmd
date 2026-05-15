@@ -1,12 +1,17 @@
 ---
 title: "Explore stressor projections"
 author: "Casey O'Hara"
+format:
+  html:
+    toc: true
+execute:
+  warning: false
+  message: false
 ---
 
 ```{r setup}
 library(tidyverse)
 library(terra)
-
 ```
 
 ## Summary

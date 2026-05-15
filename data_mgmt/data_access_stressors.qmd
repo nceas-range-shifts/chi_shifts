@@ -1,6 +1,9 @@
 ---
 title: Download stressors
 author: "Casey O'Hara"
+format:
+  html:
+    embed-resources: true
 ---
 
 ## Summary
@@ -35,10 +38,6 @@ if(!dir.exists(hab_maps_dir)) {
   exdir <- here::here('data')
   unzip(destfile, exdir = exdir)
   file.remove(destfile)
-  
-  cruft <- list.files(exdir, recursive = TRUE, include.dirs = TRUE,
-                      full.names = TRUE, pattern = '.DS*|__MAC')
-  unlink(cruft, recursive = TRUE)
 }
 ```
 
@@ -56,10 +55,12 @@ if(!dir.exists(hab_maps_dir)) {
   exdir <- here::here('data')
   unzip(destfile, exdir = exdir)
   file.remove(destfile)
-  
-  cruft <- list.files(exdir, recursive = TRUE, include.dirs = TRUE,
-                      full.names = TRUE, pattern = '.DS*|__MAC')
-  unlink(cruft, recursive = TRUE)
 }
 ```
 
+```{r}
+cruft <- list.files(here::here('data'), recursive = TRUE, include.dirs = TRUE,
+                      full.names = TRUE, pattern = '^\\.DS|^__MAC')
+
+unlink(cruft, recursive = TRUE)
+```
