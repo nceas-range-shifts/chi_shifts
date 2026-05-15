@@ -1,0 +1,63 @@
+---
+title: "Explore traits from framework and AquaX"
+author: "Casey O'Hara"
+format:
+  html:
+    toc: true
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+library(tidyverse)
+```
+
+## Summary
+
+Read in traits data from Butt framework and compare to/consolidate with AquaX.
+
+## Data
+
+Data and results are presented in: Butt, N., Halpern, B. S., O’Hara, C. C., Allcock, A. L., Polidoro, B., Sherman, S., Byrne, M., Birkeland, C., Dwyer, R. G., Frazier, M., Woodworth, B. K., Arango, C. P., Kingsford, M. J., Udyawer, V., Hutchings, P., Scanes, E., McClaren, E. J., Maxwell, S. M., Diaz-Pulido, G., … Klein, C. J. (2022). A trait-based framework for assessing the vulnerability of marine species to human impacts. Ecosphere, 13(2), e3919. https://doi.org/10.1002/ecs2.3919
+
+
+## Traits from Vulnerability Framework
+
+Traits data were installed manually into `data/spp_vuln_framework_traits` and added to .gitignore
+
+```{r}
+junction_f  <- here::here('data/spp_vuln_framework_traits/spp_traits_junction.csv')
+taxa_f      <- here::here('data/spp_vuln_framework_traits/spp_traits_taxa_lookup.csv')
+trait_val_f <- here::here('data/spp_vuln_framework_traits/spp_traits_trait_val_lookup.csv')
+gapfill_f   <- here::here('data/spp_vuln_framework_traits/spp_traits_gapfill_levels.csv')
+
+junction_df  <- data.table::fread(junction_f)
+taxa_df      <- data.table::fread(taxa_f)
+trait_val_df <- data.table::fread(trait_val_f)
+gapfill_df   <- data.table::fread(gapfill_f)
+
+spp_traits_df <-  junction_df %>%
+  dplyr::left_join(taxa_df, by = 'gf_spp_id') %>%
+  dplyr::left_join(trait_val_df, by = 'gf_trait_id') %>%
+  dplyr::left_join(gapfill_df, by = 'gf_match_id') %>%
+  ### drop id columns:
+  dplyr::select(-ends_with('_id'))
+```
+
+## Traits from AquaX Metadata
+
+AquaX data are in `/home/shares/data-aquax/META_02122025.Rdata` as object `META`
+
+```{r}
+load('/home/shares/data-aquax/META_02122025.Rdata')
+
+aquax_meta <- META %>%
+  janitor::clean_names() %>%
+  filter(sdm != "No SDM") %>%
+  select(aphia_id, sciname = scientific_name, 
+         hab, depth_range_shallow, depth_range_deep, iucn_map,
+         pelagic:bathypelagic) %>%
+  distinct()
+```
+
