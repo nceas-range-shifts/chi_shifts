@@ -1,0 +1,173 @@
+---
+title: Identify IUCN species and align to WoRMS
+author: "Casey O'Hara"
+format:
+  html:
+    embed-resources: true
+---
+
+## Summary
+
+Access IUCN listed marine species and align with WoRMS taxonomy.
+
+
+## Methods
+
+### Gather IUCN assessed marine species
+
+Access IUCN API to get a list of all assessed marine spp.
+
+```{r load packages}
+#| message: false
+#| warning: false
+library(tidyverse)
+
+library(iucnredlist) ### remotes::install_github("IUCN-UK/iucnredlist")
+
+### Initialize the API with API key from .Renviron
+api <- init_api(Sys.getenv('IUCN_API_KEY'))
+
+source(here::here('common_fxns.R'))
+```
+
+Identify comprehensively assessed groups, then pull assessment info for them.
+
+```{r}
+comp_gp_assess_f <- here::here('data/iucn_redlist/comp_group_assessments.csv')
+
+if(!file.exists(comp_gp_assess_f)) {
+  comp_gps <- list_codes(api, 'comprehensive_groups')
+  
+  comp_gps_marine <- comp_gps %>%
+    filter(comp) %>%
+    mutate(keep = case_when(
+      higher_name == 'selected_bony_fishes' ~ TRUE,
+      higher_name == 'birds'                ~ TRUE,
+      higher_name == 'mammals'              ~ TRUE,
+      higher_name == 'reef_forming_corals'  ~ TRUE,
+      ### exclude chameleons from reptiles:
+      name == 'chameleons'                  ~ FALSE,
+      higher_name == 'selected_reptiles'    ~ TRUE,
+      higher_name == 'selected_gastropods'  ~ TRUE,
+      higher_name == 'sharks_and_rays'      ~ TRUE,
+      name == 'hagfishes'                   ~ TRUE,
+      name == 'mangrove_plants'             ~ TRUE,
+      name == 'seagrasses'                  ~ TRUE,
+      name == 'lobsters'                    ~ TRUE,
+      TRUE                                  ~ FALSE)) %>%
+    filter(keep) %>% select(-keep)
+  
+  gp_names <- comp_gps_marine$name %>% sort()
+  
+  comp_gp_assessments <- purrr::map(
+    .x = gp_names, 
+    .f = ~ assessments_by_group(
+      api = api,
+      group = 'comprehensive_groups',
+      code = .x,
+      scope = 1
+    )
+  )
+  
+  comp_gp_assess_df <- comp_gp_assessments %>%
+    setNames(gp_names) %>%
+    bind_rows(.id = 'group') %>%
+    select(group, sis_taxon_id, assessment_id, year_published) %>%
+    distinct() %>%
+    mutate(year_published = as.integer(year_published))
+  
+  write_csv(comp_gp_assess_df, comp_gp_assess_f)
+}
+
+comp_gp_assess_df <- read_csv(comp_gp_assess_f, show_col_types = FALSE)
+table(comp_gp_assess_df$group)
+```
+
+Using `sis_taxon_id` query scientific names.  While we're here, parse red list category and year assessed.  Chunk first checks to see if the final file is complete; if not, loops over each assessment, pinging API only if temp file is not present, then binds all temp files to create the final file.
+
+```{r}
+iucn_spp_assessment_f <- here::here('data/iucn_redlist/iucn_species_assessments.csv')
+
+if(!file.exists(iucn_spp_assessment_f)) {
+  assess_id_vec <- comp_gp_assess_df$assessment_id
+  
+  assess_tmp_fstem <- here::here('tmp/redlist_assess_%s.csv')
+  
+  assess_tmp_f_vec <- sprintf(assess_tmp_fstem, assess_id_vec)
+  assess_to_do <- assess_id_vec[!file.exists(assess_tmp_f_vec)]
+  
+  message('Processing ', length(assess_to_do), ' remaining assessments...')
+  
+  ### Loop over assessment IDs
+  for(i in seq_along(assess_to_do)) {
+    ### i <- 1
+    
+    assess_id <- as.integer(assess_to_do[i])
+    assess_tmp_f <- sprintf(assess_tmp_fstem, assess_id)
+    
+    if(file.exists(assess_tmp_f)) {
+      # message(i, '. file exists: ', basename(assess_tmp_f), '... skipping!')
+      next()
+    }
+    
+    group <- comp_gp_assess_df$group[which(comp_gp_assess_df$assessment_id == assess_id)]
+    # message(i, '. Finding assessment data for assessment ', assess_id, '...')
+    
+    Sys.sleep(1) ### pause to be kind to API
+    x <- assessment_data(api, assess_id)
+    
+    ### extract data
+    sis_taxon_id <- x$sis_taxon_id
+    sciname      <- x$taxon$scientific_name
+    rl_version   <- x$red_list_category$version
+    rl_category  <- x$red_list_category$code
+    year         <- x$year_published %>% as.integer()
+    scope        <- x$scopes[[1]]$description$en
+    
+    df <- data.frame(group,
+                     sis_taxon_id,
+                     assessment_id = assess_id,
+                     sciname,
+                     redlist_version = rl_version,
+                     redlist_category = rl_category,
+                     assessed_year = year,
+                     scope)
+    
+    write_csv(df, assess_tmp_f)
+  }
+  
+  ### bind all temp files and write out final file
+  assess_tmp_f_vec <- sprintf(assess_tmp_f, assess_id_vec)
+  if(any(!file.exists(assess_tmp_f_vec))) stop('Missing one or more tmp files!')
+  system.time({
+  assess_all_list <- purrr::map(.x = assess_tmp_f_vec, 
+                                .f = read_csv, 
+                                show_col_types = FALSE)
+  })
+  system.time({
+  assess_all_list <- parallel::mclapply(
+    X = assess_tmp_f_vec, 
+    FUN = read_csv, 
+    show_col_types = FALSE,
+    mc.cores = 40)
+  })
+  system.time({
+  assess_all_df <- assess_all_list %>%
+    setNames(str_extract(basename(assess_tmp_f_vec), '[0-9]+')) %>%
+    bind_rows(.id = 'assessment_id')
+  })
+  
+  write_csv(assess_all_df, iucn_spp_assessment_f)
+}
+
+assess_all_df <- read_csv(iucn_spp_assessment_f)
+
+# x <- list.files(here::here('tmp'), pattern = 'redlist_assess_.*.csv', full.names = TRUE)
+# unlink(x)
+```
+
+### Compare IUCN scinames to WoRMS names
+
+First, check against the species already listed in the `spp_vuln_framework` or `funct_entity` datasets to identify Aphia IDs.  For any species not listed there, ping WoRMS API (via `taxize`) to resolve missed matches.
+
+Finally, compare to AquaX metadata to see if any IUCN-mapped species are not included (remembering that these are only for comprehensively-assessed groups!)  
