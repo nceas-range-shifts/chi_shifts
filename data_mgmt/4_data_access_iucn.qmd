@@ -89,7 +89,8 @@ Using `sis_taxon_id` query scientific names.  While we're here, parse red list c
 iucn_spp_assessment_f <- here::here('data/iucn_redlist/iucn_species_assessments.csv')
 
 if(!file.exists(iucn_spp_assessment_f)) {
-  assess_id_vec <- comp_gp_assess_df$assessment_id
+  assess_id_vec <- comp_gp_assess_df$assessment_id %>% as.integer()
+    ### as.integer coerces 7e+06 to 7000000
   
   assess_tmp_fstem <- here::here('tmp/redlist_assess_%s.csv')
   
@@ -137,30 +138,25 @@ if(!file.exists(iucn_spp_assessment_f)) {
   }
   
   ### bind all temp files and write out final file
-  assess_tmp_f_vec <- sprintf(assess_tmp_f, assess_id_vec)
+  assess_tmp_f_vec <- sprintf(assess_tmp_fstem, assess_id_vec)
   if(any(!file.exists(assess_tmp_f_vec))) stop('Missing one or more tmp files!')
-  system.time({
-  assess_all_list <- purrr::map(.x = assess_tmp_f_vec, 
-                                .f = read_csv, 
-                                show_col_types = FALSE)
-  })
-  system.time({
+  
+  # system.time({ ### very slow - reading in 20k files!
   assess_all_list <- parallel::mclapply(
     X = assess_tmp_f_vec, 
     FUN = read_csv, 
     show_col_types = FALSE,
-    mc.cores = 40)
-  })
-  system.time({
+    mc.cores = 100)
+  # })
+  
   assess_all_df <- assess_all_list %>%
     setNames(str_extract(basename(assess_tmp_f_vec), '[0-9]+')) %>%
     bind_rows(.id = 'assessment_id')
-  })
-  
+
   write_csv(assess_all_df, iucn_spp_assessment_f)
 }
 
-assess_all_df <- read_csv(iucn_spp_assessment_f)
+assess_all_df <- read_csv(iucn_spp_assessment_f, show_col_types = FALSE)
 
 # x <- list.files(here::here('tmp'), pattern = 'redlist_assess_.*.csv', full.names = TRUE)
 # unlink(x)
