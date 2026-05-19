@@ -18,7 +18,7 @@ data/funct_entity_traits/*.csv
 *.zip
 tmp/*
 
-### rendered HTMLS?
+### ignore rendered HTMLS?
 *.html
 
 ### Example code in package build process
