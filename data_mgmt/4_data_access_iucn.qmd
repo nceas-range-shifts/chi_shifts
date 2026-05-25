@@ -403,8 +403,7 @@ aquax_iucn_manual <- aquax_meta %>%
 aquax_iucn_manual_f <- here('data/iucn_redlist/int/aquax_iucn_manual.csv')
 if(!file.exists(aquax_iucn_manual_f)) write_csv(aquax_iucn_manual, aquax_iucn_manual_f)
 
-aquax_iucn_manual <- read_csv(aquax_iucn_manual_f, show_col_types = FALSE) %>%
-  mutate()
+aquax_iucn_manual <- read_csv(aquax_iucn_manual_f, show_col_types = FALSE)
 
 ```
 

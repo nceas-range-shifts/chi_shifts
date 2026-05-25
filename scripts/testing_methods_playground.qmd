@@ -1,0 +1,408 @@
+---
+title: Test methods for large-scale data wrangling
+author: "Casey O'Hara"
+format:
+  html:
+    embed-resources: true
+execute:
+    message: false
+    warning: false
+---
+
+## Summary
+
+For each of the relevant uniform-exposure stressors, i.e., those that do not depend on species-specific interactions, for each pixel calculate a mean vulnerability across each taxonomic group and overall.  Calculate summary statistics as well - variance, skew, kurtosis.  This will be done for the current, RCP 4.5, and RCP 8.5 scenarios.
+
+Because we will be working with so many species at such a fine scale, we will need to implement more efficient and fast methods.  Here we explore dplyr, data.table, and 
+
+## Data
+
+* Vulnerability scores from Butt et al. (2022). A trait-based framework for assessing the vulnerability of marine species to human impacts. Ecosphere, 13(2), e3919. https://doi.org/10.1002/ecs2.3919
+* AquaX species distribution models from Reygondeau et al. (2026). AquaX: An enhanced and revised AquaMaps framework to model marine species distributions and biodiversity. PLOS ONE, 21(2), e0335823. https://doi.org/10.1371/journal.pone.0335823
+
+## Methods
+
+* Read in SDMs for multiple species as long data frame.
+* Group by pixel and summarize stats.
+* Save out as raster or parquet.
+
+```{r}
+library(tidyverse)
+library(data.table)
+library(here)
+library(arrow)
+library(e1071) ### for moments
+
+source(here('common_fxns.R'))
+```
+
+### Identify test taxon
+
+For prototyping, let's look at a subset of mammals, with ship strike as stressor.
+
+```{r}
+available_spp <- list.files(here_aquax('SDM')) %>% 
+    str_extract('[0-9]+') %>% 
+    as.numeric()
+aquax_meta <- get_aquax_meta() %>%
+    filter(aphia_id %in% available_spp)
+spp_vuln_df <- get_spp_vuln() %>%
+    filter(aphia_id %in% aquax_meta$aphia_id)
+```
+Load in the SDMs for this sample of species.  For nimble testing, let's take a small sample of cells that contain multiple species.
+
+```{r}
+set.seed(42)
+test_df <- spp_vuln_df %>%
+    filter(taxon == 'marine_mammals' & stressor == 'wildlife_strike') %>%
+    slice_sample(n = 10)
+
+scenario <- c('current', 'rcp45_2050', 'rcp85_2050')
+
+system.time({
+    sdm_df <- get_sdm(aphia_id = test_df$aphia_id, scenario = scenario)
+})
+#  user  system elapsed 
+# 5.602  29.043  12.851 
+
+# system.time({
+#   ### in data.table syntax since dplyr took forever
+#   sdm_nspp_dt <- sdm_df %>%
+#     as.data.table() %>%
+#     .[ , .(n_spp = n_distinct(aphia_id)), by = .(x, y)]
+# })
+### Processed 14871578 groups out of 14871578. 100% done. Time elapsed: 221s. ETA: 0s.
+###    user  system elapsed 
+### 620.189  35.136 227.403 
+# 
+# sdm_sample_cells <- sdm_nspp_dt %>%
+#   slice_max(order_by = n_spp, prop = 0.1)
+# 
+# write_csv(sdm_sample_cells, here('tmp/methods_test_sample_cells.csv'))
+sdm_sample_cells <- read_csv(here('tmp/methods_test_sample_cells.csv'))
+
+sdm_df <- sdm_df %>% inner_join(sdm_sample_cells, by = c('x', 'y'))
+
+```
+
+After thresholding, presence = NA or 1; multiply presence in each scenario column by vulnerability for each species, then group_by/summarize per pixel.
+
+### Test dplyr speed
+
+```{r dplyr_version}
+ system.time({
+    spp_vuln_df <- sdm_df %>%
+        left_join(test_df %>% select(aphia_id, vuln), by = 'aphia_id') %>%
+        mutate(across(all_of(scenario), ~.x * vuln))
+})
+#  user  system elapsed 
+# 0.291   0.369   0.664 
+  
+system.time({
+    vuln_current_df <- spp_vuln_df %>%
+        group_by(x, y) %>%
+        summarize(nspp = n_distinct(aphia_id),
+                  v_mean = mean(current, na.rm = TRUE),
+                  v_sdev = sd(current, na.rm = TRUE),
+                  v_skew = e1071::skewness(current, na.rm = TRUE),
+                  v_kurt = e1071::kurtosis(current, na.rm = TRUE),
+                  .groups = 'drop')
+})
+#   user  system elapsed 
+# 86.283   1.995  88.056 
+```
+
+### Test data.table speed
+
+The `data.table` methods are about twice as fast:
+
+```{r data.table_version}
+test_dt <- test_df %>% select(aphia_id, vuln) %>%
+    as.data.table(key = 'aphia_id')
+sdm_dt <- sdm_df %>%
+    as.data.table(key = 'aphia_id') 
+
+system.time({
+    spp_vuln_dt <- test_dt[sdm_dt, on = "aphia_id"] %>%
+        .[ , (scenario) := lapply(.SD, \(x) x * vuln), .SDcols = scenario]
+}) 
+#  user  system elapsed 
+# 2.773   0.026   0.075 
+
+### data.table results identical to dplyr results:
+# asdf <- spp_vuln_df %>% 
+#   as.data.frame() %>%
+#   select(x, y, current, rcp45_2050, rcp85_2050, aphia_id) %>% 
+#   arrange(aphia_id, x, y)
+# qwer <- spp_vuln_dt %>% 
+#   as.data.frame() %>%
+#   select(x, y, current, rcp45_2050, rcp85_2050, aphia_id) %>% 
+#   arrange(aphia_id, x, y)
+# identical(asdf, qwer)
+# [1] TRUE
+
+
+system.time({ 
+    vuln_current_dt <- spp_vuln_dt %>%
+        .[ , .( nspp = n_distinct(aphia_id),
+                v_mean = mean(current, na.rm = TRUE),
+                v_sdev = sd(current, na.rm = TRUE),
+                v_skew = e1071::skewness(current, na.rm = TRUE),
+                v_kurt = e1071::kurtosis(current, na.rm = TRUE)
+              ), by = .(x, y)]
+})
+# Processed 1672162 groups out of 1672162. 100% done. Time elapsed: 50s. ETA: 0s.
+#    user  system elapsed 
+# 106.776   2.724  51.239 
+
+### data.table results identical to dplyr results:
+# asdf <- vuln_current_df %>%
+#   as.data.frame() %>%
+#   select(x, y, nspp, v_mean, v_sdev, v_skew, v_kurt) %>%
+#   arrange(x, y)
+# qwer <- vuln_current_dt %>%
+#   as.data.frame() %>%
+#   select(x, y, nspp, v_mean, v_sdev, v_skew, v_kurt) %>%
+#   arrange(x, y)
+# identical(asdf, qwer)
+# [1] TRUE
+```
+
+### Test collapse speed
+
+See https://fastverse.org/collapse/articles/collapse_for_tidyverse_users.html
+
+This can calculate across all columns in 1/10th the time data.table takes to calculate one column.  Returns as a 3-d array:
+
+1. the grouped variables (here, as x-y pairs like `"-179.975.-53.375"`)
+2. the summary variables (`"N", "Mean", "SD", "Min", "Max", "Skew", "Kurt"`)
+3. the summarized variables (`"current", "rcp45_2050", "rcp85_2050", "cutoff", "aphia_id", "n_spp", "vuln"`)
+
+Does the `N` accurately count distinct aphia IDs?  There should be few occasions where `n_distinct(aphia_id)` is different than the number of observations.
+
+```{r}
+library(collapse)
+
+system.time({
+    spp_vuln_collapse <- sdm_df %>%
+        collapse::join(test_df %>% select(aphia_id, vuln), how = 'left', on = 'aphia_id') %>%
+        collapse::fmutate(across(all_of(scenario), .fns = \(x) x * .$vuln))
+})
+# left join: x[aphia_id] 5369819/5369819 (100%) <536981.9:1st> y[aphia_id] 10/10 (100%)
+#    user  system elapsed 
+#   0.066   0.047   0.128 
+# identical(spp_vuln_collapse, spp_vuln_df)
+# [1] TRUE
+system.time({
+    vuln_current_collapse <- spp_vuln_collapse %>%
+        fgroup_by(x, y) %>%
+        qsu(higher = TRUE)
+})
+# Warning in unused_arg_action(match.call(), ...) :
+#   Unused argument (cols = scenario) passed to qsu.grouped_df
+#    user  system elapsed 
+#   4.818   0.838   5.842 
+### NOTE: returns as 3-d array: rows = groups, cols = stats, layers = ungrouped vars (including scenarios)
+### NOTE ALSO: this does all the desired columns at once, rather than one at a time like previous attempts
+
+### try a more dplyr format:
+system.time({
+    vuln_current_collapse <- spp_vuln_collapse %>%
+        fgroup_by(x, y) %>%
+        fsummarize(nspp   = fndistinct(aphia_id),
+                   v_mean = fmean(current, na.rm = TRUE),
+                   v_sdev = fsd(current, na.rm = TRUE),
+                   # v_skew = qsu(current, na.rm = TRUE)$Skew,
+                   # v_kurt = qsu(current, na.rm = TRUE)$Kurt,
+                   keep.group_vars = FALSE)
+})
+  #  user  system elapsed 
+  # 0.585   0.022   0.627 
+### NOTE: fast for mean and sd, but skew and kurtosis not so much
+```
+
+### Reading in: piece by piece?
+
+Can we read in each SDM in pieces, e.g., just observations where `x` is a specific value or range?  If we can do this quickly and efficiently, we can summarize more species in smaller chunks and save out.  It doesn't look like `arrow::read_parquet` can do this...  but perhaps read in and filter with `data.table`:  `dt[x == -179.975]`:
+
+```{r}
+test_id <- test_df$aphia_id[1]
+scenario = c('Current', 'RCP26_2050', 'RCP26_2100',
+             'RCP45_2050', 'RCP45_2100', 'RCP85_2050', 'RCP85_2100') %>%
+  tolower()
+filestem <- here_aquax('SDM/FINAL_EMSDM_EMMEAN_SP_%s.parquet')
+
+### check timing of read/clean/select using dplyr
+system.time({
+  x <- lapply(1:100, FUN = function(x, id, scen, fstem) {
+    arrow::read_parquet(sprintf(fstem, id)) %>%
+      janitor::clean_names() %>%
+      select(x, y, all_of(scen), cutoff)
+  }, id = test_id, scen = scenario, fstem = filestem)
+})
+#  user  system elapsed 
+# 7.749  11.615   3.211 
+
+### check timing of read/clean/select using data.table
+system.time({
+  y <- lapply(1:100, FUN = function(x, id, scen, fstem) {
+    arrow::read_parquet(sprintf(fstem, id)) %>%
+      janitor::clean_names() %>%
+      setDT() %>% ### copy in place 
+      .[ , c('x', 'y', scen, 'cutoff'), with = FALSE]
+  }, id = test_id, scen = scenario, fstem = filestem)
+})
+#   user  system elapsed 
+# 15.022  12.356  18.912 
+### data.table select seems much slower!
+```
+
+
+```{r}
+### Using dplyr::select
+system.time({
+  x <- lapply(1:100, FUN = function(i, id, scen, fstem, x) {
+    df <- arrow::read_parquet(sprintf(fstem, id)) %>%
+      janitor::clean_names() %>%
+      select(x, y, all_of(scen), cutoff)
+    df <- df %>%
+      mutate(across(all_of(scen), ~ifelse(.x < cutoff, NA, 1))) %>%
+      filter(!if_all(all_of(scen), is.na)) %>%
+      mutate(aphia_id = id)
+    return(df)
+  }, id = test_id, scen = scenario, fstem = filestem)
+})
+#  user  system elapsed 
+# 6.666   5.271   8.678  
+
+### Using data.table methods but dplyr::select
+system.time({
+  y <- lapply(1:100, FUN = function(i, id, scen, fstem) {
+    dt <- arrow::read_parquet(sprintf(fstem, id)) %>%
+      janitor::clean_names() %>%
+      select(x, y, all_of(scen), cutoff) %>%
+      setDT()
+    dt[, (scen) := lapply(.SD, \(x) fifelse(x < cutoff, NA_real_, 1)), .SDcols = scen]
+    ### filter to keep only rows where at least one scenario is non-NA
+    keep <- rowSums(is.na(dt[, ..scen])) < length(scen)
+    dt <- dt[keep]
+    
+    dt <- dt[, aphia_id := id]
+    
+    return(dt)
+  }, id = test_id, scen = scenario, fstem = filestem)
+})
+#    user  system elapsed 
+# 134.382   9.726   4.452 
+
+identical(
+  x[[1]] %>% as.data.frame(),
+  y[[1]] %>% as.data.frame()
+)
+
+# head(x[[1]]); head(y[[1]])
+```
+
+```{r}
+### Using dplyr::select; add in x filter
+xvec <- c(-179.875, -179.825)
+system.time({
+  x <- lapply(1:100, FUN = function(i, id, scen, fstem, xvec) {
+    df <- arrow::read_parquet(sprintf(fstem, id)) %>%
+      janitor::clean_names() %>%
+      select(x, y, all_of(scen), cutoff)
+    df <- df %>%
+      filter(x %in% xvec) %>%
+      mutate(across(all_of(scen), ~ifelse(.x < cutoff, NA, 1))) %>%
+      filter(!if_all(all_of(scen), is.na)) %>%
+      mutate(aphia_id = id)
+    return(df)
+  }, id = test_id, scen = scenario, fstem = filestem, xvec = xvec)
+})
+#   user  system elapsed 
+# 13.661  10.871   9.437
+
+### Using data.table methods but dplyr::select
+system.time({
+  y <- lapply(1:100, FUN = function(i, id, scen, fstem, xvec) {
+    dt <- arrow::read_parquet(sprintf(fstem, id)) %>%
+      janitor::clean_names() %>%
+      select(x, y, all_of(scen), cutoff) %>%
+      setDT()
+    dt <- dt[x %in% xvec]
+    dt[ , (scen) := lapply(.SD, \(x) fifelse(x < cutoff, NA_real_, 1)), .SDcols = scen]
+    ### filter to keep only rows where at least one scenario is non-NA:
+    keep <- rowSums(is.na(dt[, ..scen])) < length(scen)
+    dt <- dt[keep]
+    dt <- dt[, aphia_id := id]
+    return(dt)
+  }, id = test_id, scen = scenario, fstem = filestem, xvec = xvec)
+})
+#     user   system  elapsed 
+# 2805.920   59.788   38.481 
+
+identical(
+  x[[1]] %>% as.data.frame(),
+  y[[1]] %>% as.data.frame()
+)
+# head(x[[1]]); head(y[[1]])
+```
+
+### Update: use duckdb for filtering by x prior to reading in:
+
+```{r}
+xvec <- seq(-179.975, -175.025, by = 0.05)
+scenario <- c('Current', 'RCP45_2050', 'RCP85_2050')
+
+system.time({
+    for(i in 1:100) {
+      asdf <- get_sdm_dplyr(aphia_id = test_id, scenario = scenario, xvec = xvec, apply_thresh = TRUE)
+    }
+})
+ #   user  system elapsed 
+ # 17.703   8.885  11.060 
+
+system.time({
+  for(i in 1:100) {
+    asdf <- get_sdm_duckdb(aphia_id = test_id, scenario = scenario, xvec = xvec, apply_thresh = TRUE)
+  }
+})
+ #   user  system elapsed 
+ # 14.038   8.955  15.874 
+```
+
+Interesting; slower than just dplyr methods!  But, perhaps more memory efficient since not reading in entire file then filtering?
+
+Try with parallelization:
+
+```{r}
+xvec <- seq(-179.975, -175.025, by = 0.05)
+scenario <- c('Current', 'RCP45_2050', 'RCP85_2050')
+
+system.time({
+  parallel::mclapply(1:200, mc.cores = 20, FUN = function(x) {
+    for(i in 1:100) {
+      asdf <- get_sdm_dplyr(aphia_id = test_id, scenario = scenario, xvec = xvec, apply_thresh = TRUE)
+    }
+  })
+})
+ #   user  system elapsed 
+ # 17.703   8.885  11.060 
+
+system.time({
+  parallel::mclapply(1:200, mc.cores = 20, FUN = function(x) {
+    for(i in 1:100) {
+      asdf <- get_sdm_duckdb(aphia_id = test_id, scenario = scenario, xvec = xvec, apply_thresh = TRUE)
+    }
+  })
+})
+ #   user  system elapsed 
+ # 14.038   8.955  15.874 
+```
+
+
+## Takeaways
+
+For reading in and filtering files, it looks like dplyr does pretty well, especially if we consider that data.table parallelization may not provide as much of a boost when included in mclapply...
+
+For processing large datasets quickly, collapse::qsu looks amazing, but will require some finesse to get it back into data frame formats (and drop the unnecessary values).
