@@ -43,14 +43,17 @@ get_spp_vuln <- function() {
   return(df)
 }
 
-get_sdm_duckdb <- function(aphia_id, 
+get_sdm <- function(aphia_id, 
                     scenario = c('Current', 
                                  'RCP26_2050', 'RCP26_2100',
                                  'RCP45_2050', 'RCP45_2100', 
                                  'RCP85_2050', 'RCP85_2100'),
-                    xvec = NULL,
+                    xrange = NULL, ### one or two numeric values
                     apply_thresh = TRUE) {
-
+  ### SEE testing_methods_playground.qmd FOR OTHER VERSIONS
+  ### Here going with duckdb version - slightly faster than dplyr
+  ### version, plus memory benefit of not reading in then filtering
+  
   ### define internal function:
   process_one_sdm <- function(id, scenario, apply_thresh) {
     filestem <- here_aquax('SDM/FINAL_EMSDM_EMMEAN_SP_%s.parquet')
@@ -59,14 +62,14 @@ get_sdm_duckdb <- function(aphia_id,
     con <- duckdb::dbConnect(duckdb::duckdb())
     
     query_str <- paste0(
-      "SELECT x, y, ", paste(scenario, collapse = ', cutoff, '),
+      "SELECT x, y, cutoff, ", paste(scenario, collapse = ', '),
       " FROM read_parquet('", sprintf(filestem, id), "')"
     )
-    if(!is.null(xvec)) {
+    if(!is.null(xrange)) {
       ### tack on WHERE clause
       query_str <- paste0(
         query_str,
-        " WHERE x IN (", paste(xvec, collapse = ', ') , ")"
+        " WHERE x <= ", max(xrange), " AND x >= ", min(xrange)
         )
     }
     df <- DBI::dbGetQuery(con, query_str) %>%
@@ -102,51 +105,3 @@ get_sdm_duckdb <- function(aphia_id,
   }
   return(sdm_df)
 }
-
-get_sdm_dplyr <- function(aphia_id, 
-                          scenario = c('Current', 
-                                       'RCP26_2050', 'RCP26_2100',
-                                       'RCP45_2050', 'RCP45_2100', 
-                                       'RCP85_2050', 'RCP85_2100'),
-                          xvec = NULL,
-                          apply_thresh = TRUE) {
-  
-  ### define internal function:
-  process_one_sdm <- function(id, scenario, apply_thresh) {
-    scen <- tolower(scenario)
-    filestem <- here_aquax('SDM/FINAL_EMSDM_EMMEAN_SP_%s.parquet')
-    df <- arrow::read_parquet(sprintf(filestem, id)) %>%
-      janitor::clean_names() %>%
-      select(x, y, all_of(scen), cutoff) %>%
-      mutate(aphia_id = id)
-    if(!is.null(xvec)) { 
-      df <- df %>%
-        filter(x %in% xvec)
-    }
-    if(apply_thresh) {
-      df <- df %>%
-        mutate(across(all_of(scen), ~ifelse(.x < cutoff, NA, 1))) %>%
-        filter(!if_all(all_of(scen), is.na))
-    }
-    return(df)
-  }
-  ### if single ID, process directly; otherwise, parallel:
-  if(length(aphia_id) == 1) {
-    sdm_df <- process_one_sdm(id = aphia_id, 
-                              scen = scenario, 
-                              apply_thresh = apply_thresh)
-  } else {
-    ### set # cores based on # ids, up to some max (20)
-    n_cores <- min(length(aphia_id), 20)
-    sdm_list <- parallel::mclapply(
-      mc.cores = n_cores,
-      X = aphia_id,
-      FUN = process_one_sdm,
-      scen = scenario, apply_thresh = apply_thresh
-    )
-    sdm_df <- data.table::rbindlist(sdm_list)
-  }
-  return(sdm_df)
-}
-
-get_sdm <- get_sdm_dplyr
