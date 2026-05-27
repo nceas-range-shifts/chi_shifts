@@ -15,6 +15,7 @@ data/pressures_raw/*.tif
 data/spp_vuln_framework_scores/*.csv
 data/spp_vuln_framework_traits/*.csv
 data/funct_entity_traits/*.csv
+data/vuln_maps/*
 *.zip
 tmp/*
 

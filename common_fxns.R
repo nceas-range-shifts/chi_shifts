@@ -82,8 +82,9 @@ get_sdm <- function(aphia_id,
     if(apply_thresh) {
       scen = tolower(scenario)
       df <- df %>%
-        mutate(across(all_of(scen), ~ifelse(.x < cutoff, NA, 1))) %>%
-        filter(!if_all(all_of(scen), is.na))
+        mutate(across(.cols = c(x, y), ~round(.x, 3))) %>%
+        mutate(across(.cols = scen, ~ifelse(.x < cutoff, NA, 1))) %>%
+        filter(!if_all(.cols = scen, is.na))
     }
     return(df)
   }
