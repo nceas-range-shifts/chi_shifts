@@ -17,7 +17,7 @@ get_aquax_meta <- function(meta = 'META_02122025.Rdata', sdm = TRUE) {
 
 get_spp_traits <- function() {
   ### run data mgmt scripts first!
-  traits_dir <- here::here('data/spp_vuln_framework_traits')
+  traits_dir <- here::here('_data_raw/ohara_2024/spp_vuln_framework_traits')
   junction_df <- data.table::fread(file.path(traits_dir, 'spp_traits_junction.csv'))
   traitval_df <- data.table::fread(file.path(traits_dir, 'spp_traits_trait_val_lookup.csv'))
   taxa_df     <- data.table::fread(file.path(traits_dir, 'spp_traits_taxa_lookup.csv'))
@@ -32,7 +32,7 @@ get_spp_traits <- function() {
 
 get_spp_vuln <- function() {
   ### run data mgmt scripts first!
-  vuln_dir <- here::here('data/spp_vuln_framework_scores')
+  vuln_dir <- here::here('_data_raw/ohara_2024/spp_vuln_framework_scores')
   junction_df <- data.table::fread(file.path(vuln_dir, 'spp_vuln_junction.csv'))
   taxa_df     <- data.table::fread(file.path(vuln_dir, 'spp_vuln_taxa_lookup.csv'))
   stressor_df <- data.table::fread(file.path(vuln_dir, 'spp_vuln_stressor_lookup.csv'))
@@ -95,8 +95,8 @@ get_sdm <- function(aphia_id,
                               scenario = scenario, 
                               apply_thresh = apply_thresh)
   } else {
-    ### set # cores based on # ids, up to some max (20)
-    n_cores <- min(length(aphia_id), 20)
+    ### set # cores based on # ids, up to some max
+    n_cores <- min(length(aphia_id), 60)
     sdm_list <- parallel::mclapply(
       mc.cores = n_cores,
       X = aphia_id,

@@ -1,0 +1,124 @@
+---
+title: Map impact stats by stressor across all species
+author: "Casey O'Hara"
+format:
+  html:
+    embed-resources: true
+execute:
+    warning: false
+---
+
+## Summary
+
+For each stressor, combine all species-wide stressor vulnerability maps with stressor distribution maps.
+
+## Data
+
+* vulnerability maps generated in 2_map_vulnerability_stressor_all_spp.qmd
+* stressor maps generated in XXXX
+
+## Methods
+
+* Read in SDMs for multiple species as long data frame
+* Group by pixel and summarize stats.
+* Save out as raster or parquet.
+
+```{r attach packages}
+#| message: false
+#| 
+library(tidyverse)
+library(arrow)
+library(collapse)
+library(here)
+library(terra)
+
+source(here('common_fxns.R'))
+```
+
+### Gather species richness maps
+
+```{r gather spp_richness}
+nspp_df <- read_parquet(here('_output/vuln_maps/spp_richness_all_spp.parquet'))
+nspp_r  <- rast(nspp_df)
+
+plot(nspp_r)
+
+### pull scenarios from data
+scenarios <- names(nspp_df)[!names(nspp_df) %in% c('x', 'y', 'tx', 'f')]
+```
+
+### Iterate over stressors and scenarios
+
+For each stressor, iterate over scenarios to generate a single mapset of pooled mean, sd, skew, and kurtosis.
+
+```{r find stressor vuln maps}
+vuln_mapfs <- list.files(here('_output/vuln_maps'), pattern = '^all_spp_vuln_.+parquet$', full.names = TRUE)
+str_vulns  <- basename(vuln_mapfs) %>% str_remove_all('all_spp_vuln_|.parquet')
+
+str_mapfs  <- list.files(here('_data_raw/halpern_2025/pressures_rescaled'), pattern = '.tif', full.names = TRUE)
+str_dists  <- basename(str_mapfs) %>% str_remove_all('_ssp[0-9].+') %>% unique()
+```
+
+### Marine Heat Waves
+```{r}
+mhw_vuln_df <- read_parquet(vuln_mapfs[str_detect(vuln_mapfs, 'marine_heat_waves')]) %>%
+  fsubset(stat == 'mean') %>% select(-stat)
+mhw_vuln <- rast(mhw_vuln_df, crs = 'epsg:4326')
+plot(mhw_vuln)
+```
+
+```{r}
+mhw_maps <- str_mapfs[str_detect(str_mapfs, 'sst-extremes') & str_detect(str_mapfs, 'ssp245_current|medium-term')]
+mhw_dist <- rast(mhw_maps) %>% setNames(scenarios) %>% project(mhw_vuln)
+plot(mhw_dist)
+```
+
+```{r}
+mhw_impact <- mhw_vuln * mhw_dist
+
+plot(mhw_impact)
+```
+
+
+
+### Nutrient Pollution
+```{r}
+nutr_vuln_df <- read_parquet(vuln_mapfs[str_detect(vuln_mapfs, 'nutrient_pollution')]) %>%
+  fsubset(stat == 'mean') %>% select(-stat)
+nutr_vuln <- rast(nutr_vuln_df, crs = 'epsg:4326')
+plot(nutr_vuln)
+```
+
+```{r}
+nutr_maps <- str_mapfs[str_detect(str_mapfs, 'nutrient-input') & str_detect(str_mapfs, 'ssp2_current|medium-term')]
+nutr_dist <- rast(nutr_maps) %>% setNames(scenarios) %>% project(nutr_vuln)
+plot(nutr_dist)
+```
+
+```{r}
+nutr_impact <- nutr_vuln * nutr_dist
+
+plot(nutr_impact)
+```
+
+### Ocean Acidification
+
+```{r}
+oa_vuln_df <- read_parquet(vuln_mapfs[str_detect(vuln_mapfs, '_oa\\.')]) %>%
+  fsubset(stat == 'mean') %>% select(-stat)
+oa_vuln <- rast(oa_vuln_df, crs = 'epsg:4326')
+plot(oa_vuln)
+```
+
+```{r}
+oa_maps <- str_mapfs[str_detect(basename(str_mapfs), '^oa_') & str_detect(str_mapfs, 'ssp245_current|medium-term')]
+oa_dist <- rast(oa_maps) %>% setNames(scenarios) %>% project(oa_vuln)
+plot(oa_dist)
+```
+
+```{r}
+oa_impact <- oa_vuln * oa_dist
+
+plot(oa_impact) 
+```
+
