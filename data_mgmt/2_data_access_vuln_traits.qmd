@@ -12,6 +12,9 @@ Download updated species traits data from:
 
 * Butt et al. (2022). A trait-based framework for assessing the vulnerability of marine species to human impacts. Ecosphere, 13(2), e3919. https://doi.org/10.1002/ecs2.3919
 
+Updated for:
+
+* O’Hara et al. (2024). Cumulative human impacts on global marine fauna highlight risk to biological and functional diversity. PLOS ONE, 19(9), e0309788. https://doi.org/10.1371/journal.pone.0309788
 
 Data are hosted at https://knb.ecoinformatics.org/view/doi:10.5063/F1QC0211 as:
 
@@ -28,13 +31,13 @@ Make sure to manually add these to .gitignore!
 ### Download traits data
 
 ```{r}
-traits_dir <- here::here('data/spp_vuln_framework_traits')
+traits_dir <- here::here('_data_raw/ohara_2024/spp_vuln_framework_traits')
 if(!dir.exists(traits_dir)) {
   traits_url <- 'https://knb.ecoinformatics.org/knb/d1/mn/v2/object/urn%3Auuid%3Ab04c2ef1-7e75-4cd7-977f-56710fc57a9c'
   destfile <- here::here('traits.zip')
   download.file(traits_url, destfile, mode = 'wb')
   
-  exdir <- here::here('data')
+  exdir <- here::here('_data_raw/ohara_2024')
   unzip(destfile, exdir = exdir)
   file.remove(destfile)
 }
@@ -43,20 +46,20 @@ if(!dir.exists(traits_dir)) {
 ### Download vulnerability scores
 
 ```{r}
-vuln_dir <- here::here('data/spp_vuln_framework_scores')
+vuln_dir <- here::here('_data_raw/ohara_2024/spp_vuln_framework_scores')
 if(!dir.exists(vuln_dir)) {
   vuln_url <- 'https://knb.ecoinformatics.org/knb/d1/mn/v2/object/urn%3Auuid%3A614cd599-78eb-4e6b-905e-e68a2b2a0489'
   destfile <- here::here('vuln.zip')
   download.file(vuln_url, destfile, mode = 'wb')
   
-  exdir <- here::here('data')
+  exdir <- here::here('_data_raw/ohara_2024')
   unzip(destfile, exdir = exdir)
   file.remove(destfile)
 }
 ```
 
 ```{r}
-cruft <- list.files(here::here('data'), recursive = TRUE, include.dirs = TRUE,
+cruft <- list.files(here::here('_data_raw/ohara_2024'), recursive = TRUE, include.dirs = TRUE,
                       full.names = TRUE, pattern = '^\\.DS|^__MAC')
 
 unlink(cruft, recursive = TRUE)

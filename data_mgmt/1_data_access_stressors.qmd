@@ -16,26 +16,34 @@ Data are hosted at https://knb.ecoinformatics.org/view/doi:10.5063/F18K77KZ:
 
 * habitat_maps - get
 * pressure_raw - get
-* pressures_rescaled - skip
+* pressures_rescaled - get
 * impacts_by_pressure - skip
 * cumulative_impact - skip
 
 ## Methods
 
+```{r}
+library(tidyverse)
+library(here)
+library(terra)
+```
+
 For each data set, check for existence in the `data` folder, and if necessary, download/unzip.
+
+For select layers,  reproject from 10 km Mollweide to 0.05 degree WGS 84.
 
 Make sure to manually add these to .gitignore!
 
 ### Download habitat maps
 
 ```{r}
-hab_maps_dir <- here::here('data/habitat_maps')
+hab_maps_dir <- here::here('_data_raw/halpern_2025/habitat_maps')
 if(!dir.exists(hab_maps_dir)) {
   hab_maps_url <- 'https://knb.ecoinformatics.org/knb/d1/mn/v2/object/urn%3Auuid%3A8598ed8c-e906-47fb-8ba5-4edfed35df0f'
   destfile <- here::here('hab_maps.zip')
   download.file(hab_maps_url, destfile, mode = 'wb')
   
-  exdir <- here::here('data')
+  exdir <- here::here('_data_raw/halpern_2025')
   unzip(destfile, exdir = exdir)
   file.remove(destfile)
 }
@@ -46,21 +54,72 @@ if(!dir.exists(hab_maps_dir)) {
 These are not rescaled.
 
 ```{r}
-prs_dir <- here::here('data/pressures_raw')
-if(!dir.exists(hab_maps_dir)) {
+prs_dir <- here::here('_data_raw/halpern_2025/pressures_raw')
+if(!dir.exists(prs_dir)) {
   prs_url <- 'https://knb.ecoinformatics.org/knb/d1/mn/v2/object/urn%3Auuid%3Aebbdaaa0-bfc8-42c5-8973-76379dd65ee7'
   destfile <- here::here('prs_raw.zip')
   download.file(prs_url, destfile, mode = 'wb')
   
-  exdir <- here::here('data')
+  exdir <- here::here('_data_raw/halpern_2025')
+  unzip(destfile, exdir = exdir)
+  file.remove(destfile)
+}
+```
+
+### Download rescaled stressor maps
+
+```{r}
+prs_rescaled_dir <- here::here('_data_raw/halpern_2025/pressures_rescaled')
+if(!dir.exists(prs_rescaled_dir)) {
+  prs_url <- 'https://knb.ecoinformatics.org/knb/d1/mn/v2/object/urn%3Auuid%3Acd2ce9a6-eaf4-4bb8-b3ca-09d253e036d9'
+  destfile <- here::here('prs_raw.zip')
+  download.file(prs_url, destfile, mode = 'wb')
+  
+  exdir <- here::here('_data_raw/halpern_2025')
   unzip(destfile, exdir = exdir)
   file.remove(destfile)
 }
 ```
 
 ```{r}
-cruft <- list.files(here::here('data'), recursive = TRUE, include.dirs = TRUE,
+cruft <- list.files(here::here('_data_raw/halpern_2025'), recursive = TRUE, include.dirs = TRUE,
                       full.names = TRUE, pattern = '^\\.DS|^__MAC')
 
 unlink(cruft, recursive = TRUE)
 ```
+
+### Rescale and Reproject Stressors
+
+Some stressors we will use the data directly from Halpern et al. 2025:
+
+* light pollution
+* ocean acidification
+* coastal disturbance
+* sea level rise
+* nutrient pollution
+* marine heat waves = ocean warming/SST
+    * this was based on the extreme event weeks, analogous to marine heat waves
+
+For these layers, let's use the rescaled layers directly for now.
+
+```{r}
+lyrs <- list.files(prs_rescaled_dir, full.names = TRUE, pattern = '.tif')
+strs <- c('light.pollution', 'oa', 'coastal.disturbance', 'slr', 'nutrient.input', 'sst.extremes')
+
+lyrs <- lyrs[grepl(paste(strs, collapse = '|'), basename(lyrs))]
+
+reproject_layer <- function(f) {
+  ### f <- lyrs[1]
+  f_out <- sprintf(here('_output/pressures_rescaled/%s'), basename(f) %>% str_replace_all('-', '_'))
+  if(!file.exists(f_out)) {
+      r <- rast(f)
+      new_r_base <- rast(ext = ext(-180, 180, -90, 90), res = 0.05, crs = 'epsg:4326')
+      new_r <- project(r, new_r_base)
+      writeRaster(new_r, f_out)
+  }
+  return(rast(f_out))
+}
+
+x <- parallel::mclapply(lyrs, reproject_layer, mc.cores = 6)
+```
+

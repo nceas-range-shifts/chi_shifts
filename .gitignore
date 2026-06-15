@@ -10,12 +10,8 @@
 .Ruserdata
 
 ### data directories
-data/habitat_maps/*.tif
-data/pressures_raw/*.tif
-data/spp_vuln_framework_scores/*.csv
-data/spp_vuln_framework_traits/*.csv
-data/funct_entity_traits/*.csv
-data/vuln_maps/*
+_data_raw/halpern_2025/*/*.tif
+_data_raw/ohara_2024/*/*.csv
 *.zip
 tmp/*
 

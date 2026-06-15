@@ -120,6 +120,6 @@ fe_df <- fe_len1 %>%
   inner_join(spp_trait_match, by = c('species' = 'sciname_fe')) %>%
   select(-species, sciname = valid_sciname)
 
-write_csv(fe_df, here::here('data/funct_entity_traits/fe_spp_traits.csv'))
+write_csv(fe_df, here::here('_data_raw/ohara_2024/funct_entity_traits/fe_spp_traits.csv'))
 ```
 
