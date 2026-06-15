@@ -12,7 +12,8 @@
 ### data directories
 _data_raw/halpern_2025/*/*.tif
 _data_raw/ohara_2024/*/*.csv
-_output
+*.parquet
+*.tif
 *.zip
 tmp/*
 
