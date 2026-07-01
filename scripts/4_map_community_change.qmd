@@ -63,6 +63,51 @@ spp_tx_df <- get_spp_vuln() %>%
 
 ### Iterate over taxa
 
+* process_slice to grab sdms for a taxon, join vuln, and process down to summary stats
+
+```{r define helper functions}
+
+process_slice <- function(sdm_df, digits = NULL) {
+  ### if no observations in this slice, move along
+  if(nrow(sdm_df) == 0) return(data.frame())
+  
+  ### classify each spp, then join all scenarios
+  sdm_tx_vuln_df <- lapply(X = scenario, 
+                           FUN = pull_scenario_stats, 
+                           d_array = sdm_tx_vuln_array) %>%
+    ### purrr::reduce to apply full join programmatically across all scenarios
+    purrr::reduce(.f = full_join, by = c('x', 'y', 'stat'))
+  if(!is.null(digits)) {
+    sdm_tx_vuln_df <- sdm_tx_vuln_df %>%
+      ### collapse::fmutate doesn't understand this syntax alas
+      collapse::fmutate(across(.cols = all_of(scenario), .fns = round, digits = digits))
+  }
+  return(sdm_tx_vuln_df)
+}
+
+classify_scenario <- function(sc, d_array) {
+  df <- d_array[ , , sc] %>%
+    as.data.frame() %>%
+    janitor::clean_names() %>%
+    ### the qsu seems to fill in zero where no observations...
+    ### drop those obs here, let the purrr::reduce fill in values as NA
+    collapse::fsubset(n > 0) %>%
+    ### drop min and max values... keep mean, sd, skew, kurtosis, n
+    select(-min, -max) %>%
+    ### qsu creates a group column mashing x and y with a '.' separator
+    separate_wider_regex(variable, patterns = c(x = '^-?[0-9]{1,3}\\.[0-9]{3}',
+                                                '\\.', ### drop the dot
+                                                y = '-?[0-9]{1,3}\\.[0-9]{3}$')) %>%
+    pivot_longer(cols = -c('x', 'y'), names_to = 'stat', values_to = sc) %>%
+    collapse::fmutate(x = as.numeric(x), y = as.numeric(y))
+
+  return(df)
+}
+```
+
+
+### Iterate over taxa
+
 For each taxon, create a composition map.  "Map" is a parquet file containing columns:
 
 * x, y (numeric): x/y in degrees for a pixel
@@ -292,5 +337,6 @@ all_spp_turnover %>%
   select(-stat) %>%
   rast() %>%
   plot()
+
 ```
 
