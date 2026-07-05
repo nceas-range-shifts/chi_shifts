@@ -1,0 +1,85 @@
+---
+title: Process AquaX thermal niche files
+author: "Casey O'Hara"
+format:
+  html:
+    embed-resources: true
+---
+
+## Summary
+
+Convert individual AquaX species thermal niche files into a single source.
+
+
+## Methods
+
+Following methods in this [GitHub issue](https://github.com/nceas-range-shifts/issues/issues/17): set up Aurora for `rclone`, then `rclone` from AquaX dropbox to Aurora.  Raw `.Rdata` files live in `/home/shares/data-aquax/thermal_niche` in subfolders `pelagic_bin`, `pelagic_occ`, `seafloor_bin`, `seafloor_occ`.
+
+For each file, read `.Rdata`, and save out dataframe as temp files, with layer (`pelagic`/`benthic`), source (`bin`/`occ`), and `AphiaID` in filename.
+
+Then, use `lapply` or the like to read all in and bind into a single massive dataframe, and save that out.
+
+### Iterate over files - save as temp
+
+```{r}
+library(tidyverse)
+library(arrow)
+library(here)
+source(here('common_fxns.R'))
+```
+
+```{r}
+
+process_f <- function(f, fstem) {
+  # f <- therm_niche_fs[45000]
+  base_f <- tolower(basename(f))
+  wcol <- ifelse(str_detect(base_f, 'pelagic'), 'pelagic', 'benthic')
+  src  <- ifelse(str_detect(base_f, '_bin_'), 'bin', 'occ')
+  aphia_id <- str_extract(base_f, '[0-9]+') %>% as.numeric()
+  tmp_out <- sprintf(tmp_out_stem, wcol, src, aphia_id)
+  if(!file.exists(tmp_out)) {
+    load(f)
+    df_stats_round <- df_stats %>%
+      mutate(across(where(is.numeric), \(x) round(x, 4)))
+    write_csv(df_stats_round, tmp_out)
+  }
+}
+```
+
+```{r}
+thermal_niche_f <- here('_data/thermal_niche/spp_thermal_niches.parquet')
+
+tmp_out_stem <- here('tmp/therm_niche/tmp_therm_niche_%s_%s_%s.csv')
+
+if(!file.exists(thermal_niche_f)) {
+  therm_niche_fs <- list.files(here_aquax('thermal_niche'), 
+                               recursive = TRUE, pattern = '.Rdata$', full.names = TRUE)
+  
+  tmp <- parallel::mclapply(therm_niche_fs, process_f, mc.cores = 72, fstem = tmp_out_stem)
+}
+```
+
+### Read all temp files and bind into dataframe
+
+```{r}
+if(!file.exists(thermal_niche_f)) {
+  tmp_csvs <- list.files(dirname(tmp_out_stem), full.names = TRUE)
+  
+  big_ol_df <- parallel::mclapply(tmp_csvs, read_csv, mc.cores = 72, show_col_types = FALSE) %>%
+    setNames(basename(tmp_csvs)) %>%
+    rowbind(idcol = 'f', fill = TRUE) %>%
+    mutate(wcol = str_extract(f, 'pelagic|benthic'),
+           src  = str_extract(f, 'bin|occ'),
+           aphia_id = str_extract(f, '[0-9]+') %>% as.numeric()) %>%
+    select(-f)
+   
+  write_parquet(big_ol_df, thermal_niche_f)
+}
+
+if(file.exists(thermal_niche_f)) {
+  tmp_csvs <- list.files(dirname(tmp_out_stem), full.names = TRUE)
+  unlink(tmp_csvs)
+}
+
+```
+

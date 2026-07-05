@@ -1,0 +1,260 @@
+---
+title: Map SST impact stats across all species
+author: "Casey O'Hara"
+format:
+  html:
+    embed-resources: true
+execute:
+    warning: false
+---
+
+## Summary
+
+For SST rise, assign temperature bands to species, and generate temperature stressor maps for each band.  Then, somehow apply those maps across all species in a sensible way...
+
+## Data
+
+* vulnerability maps generated in 2_map_vulnerability_stressor_all_spp.qmd
+* SST data from BioOracle.
+
+## Methods
+
+* From AquaX metadata, generate bins of temperature preferences (upper range) for species.
+* For each bin, identify species, read in SDM, apply vulnerability score
+* For each bin, generate a stressor value map from SST data
+* For each bin/spp group, generate stats summaries of impact across all spp present.
+
+How to account for differences:
+
+* Benthic vs pelagic spp?  Depth zones?
+* Max/min T vs mean T?
+* Summarized by taxon?
+
+```{r attach packages}
+#| message: false
+#| warning: false
+#| 
+library(tidyverse)
+library(arrow)
+library(collapse)
+library(here)
+library(terra)
+
+# remotes::install_github('bio-oracle/biooracler')
+library(biooracler)
+
+source(here('common_fxns.R'))
+```
+
+### Identify spp depth
+
+From AquaX metadata, identify whether pelagic or benthic temperature is more relevant.  In the metadata, "benthopelagic" is classified as "demersal" which makes sense.  Assume demersal are generally more on bottom than surface.
+
+```{r}
+aquax_meta <- get_aquax_meta()
+aquax_wcol_raw <- aquax_meta %>%
+  select(aphia_id, pelagic, benthic, demersal, hab)
+
+benth_pel_check <- aquax_wcol_raw %>%
+  mutate(wcol = case_when(pelagic & !demersal & !benthic ~ 'pelagic',
+                          !pelagic & (demersal | benthic) ~ 'benthic',
+                          pelagic & (demersal | benthic) ~ 'benthic/pelagic', ### no cases
+                          TRUE ~ 'huh'))
+
+# benth_pel_check %>% select(hab, wcol_flag) %>% table()
+# #                  wcol_flag
+# # hab               benth   pel
+# #   bathydemersal    1419     0
+# #   bathypelagic        0   986
+# #   benthic         13575     0
+# #   benthopelagic    1083     0
+# #   demersal         5176     0
+# #   pelagic             0  1156
+# #   pelagic-neritic     0   625
+# #   pelagic-oceanic     0   393
+# #   reef-associated  5168     0
+# #   sessile          1928     0
+
+spp_wcol <- benth_pel_check %>%
+  select(aphia_id, wcol) %>%
+  distinct()
+```
+
+### Generate temperature bins
+
+Thermal niches from AquaX Dropbox, processed and rounded to identify species with similar niches.  Thermal niche defined in same way as O'Hara et al. 2024 (taken from AquaMaps):
+
+$$s_T = \begin{cases}
+  0 &\text{where }\bar T \leq T_{max}^{p}\\
+  \frac{\bar T - T_{max}^{p}}{T_{max}^a - T_{max}^p} &\text{where }T_{max}^{p} < \bar T < T_{max}^{a}\\
+  1 &\text{where }\bar T \geq T_{max}^{p}
+\end{cases}$$
+               
+Where:
+
+* $T^a_{max}$ = 75th percentile + 1.5 × interquartile or absolute maximum mean annual temperature (whichever is greater)  
+* $T^p_{max}$ = 90th percentile of observed variation in mean annual temperature
+
+But: the AquaX data only has 75%ile and 95%ile, not 90%ile.  Let's use 75%ile instead (for now).
+               
+```{r}
+thermal_niches_raw <- read_parquet(here('_data/thermal_niche/spp_thermal_niches.parquet')) %>%
+  fsubset(variable == 'thetao_mean') %>%
+  inner_join(spp_wcol, by = c('aphia_id', 'wcol')) %>%
+  mutate(t_a_max = q75 + (q75-q25)*1.5,
+         t_a_max = ifelse(t_a_max > max, max, t_a_max),
+         t_p_max = q75) %>%
+  select(t_a_max, t_p_max, aphia_id, wcol, src)
+
+src_range_check <- thermal_niches_raw %>%
+  group_by(aphia_id) %>%
+  arrange(src) %>%
+  summarize(wcol = first(wcol),
+            t_a_range = first(t_a_max) - last(t_a_max),
+            t_p_range = first(t_p_max) - last(t_p_max),
+            n_src = n_distinct(src), .groups = 'drop')
+
+hist(src_range_check$t_a_range); hist(src_range_check$t_p_range)
+weird <- src_range_check %>% filter(abs(t_a_range) > 20 | abs(t_p_range) > 20) %>%
+  left_join(aquax_meta)
+```
+
+### Round thermal envelope and form bins
+
+```{r}
+thermal_niches <- thermal_niches_raw %>%
+  filter(src == 'occ') %>% 
+  select(-src) %>%
+  mutate(t_a_max = round(t_a_max * 2) / 2,
+         t_p_max = round(t_p_max * 2) / 2) %>%
+  mutate(t_a_max = round(t_a_max),
+         t_p_max = round(t_p_max)) %>%
+  mutate(range = t_a_max - t_p_max)
+
+bins <- thermal_niches %>% 
+  group_by(t_a_max, t_p_max) %>%
+  summarize(nspp = n_distinct(aphia_id))
+### half-degree bins: 1213 different envelopes
+### one-degree bins: 338 different envelopes
+```
+
+
+***QUESTION***: why are we missing some species? 31246 have thermal preferences; but 31509 spp in AquaX.  Re-`rclone`?
+
+```{r}
+missing <- aquax_meta %>%
+  filter(!aphia_id %in% thermal_niches$aphia_id)
+```
+
+### Load Thermal Layers
+
+Need:
+
+* Current SST and seafloor T
+* Future SST and seafloor T - decade 2050 at SSP2-4.5 and SSP5-8.5.
+
+```{r}
+# biooracler::list_layers('Ocean Temperature')
+# # thetao_baseline_2000_2019_depthmean
+# # thetao_baseline_2000_2019_depthsurf
+# x <- biooracler::list_layers(simplify = FALSE)
+
+dataset_id <- c('thetao_ssp245_2020_2100_depthmean',
+                'thetao_ssp245_2020_2100_depthsurf',
+                'thetao_ssp585_2020_2100_depthmean',
+                'thetao_ssp585_2020_2100_depthsurf',
+                'thetao_baseline_2000_2019_depthmean',
+                'thetao_baseline_2000_2019_depthsurf')
+
+out_fs <- file.path(here('_data_raw/biooracle_2026/ocean_temp'), paste0(dataset_id, '.tif'))
+out_fs <- str_replace(out_fs, '2020_2100', '2050')
+out_fs <- str_replace(out_fs, '2000_2019', '2010')
+
+### Check what's actually in it (time range, variable names, units)
+# biooracler::info_layer(dataset_id['surface'])
+
+for (i in seq_along(dataset_id)) {
+  ### i <- 1
+  id <- dataset_id[i]
+  out_f <- out_fs[i]
+  
+  ### set time constraints to a single decade, depending on dataset
+  if(str_detect(id, 'ssp')) constraints <- list(time = c('2050-01-01T00:00:00Z', '2050-01-01T00:00:00Z'))
+  else  constraints <- list(time = c('2010-01-01T00:00:00Z', '2010-01-01T00:00:00Z'))
+
+  variables <- c('thetao_mean')
+  
+  ### Download as a SpatRaster(default)
+  if(!file.exists(out_f)) {
+    t_layer <- biooracler::download_layers(id, variables, constraints)
+    writeRaster(t_layer, out_f)
+  }
+}
+
+consolidated_f <- here('_data/ocean_temp/thetao_consolidated.parquet')
+if(!file.exists(consolidated_f)) {
+  r <- rast(out_fs) %>%
+    setNames(basename(out_fs) %>% str_remove('.tif'))
+  df <- as.data.frame(r, xy = TRUE) %>%
+    pivot_longer(-c(x, y), names_to = 'scenario', values_to = 't_mean') %>%
+    fmutate(layer = ifelse(str_detect(scenario, 'surf'), 'surface', 'seafloor'),
+            scenario = scenario %>% str_remove('_depth.+')) %>%
+    fmutate(t_mean = round(t_mean, 3),
+            ### repair rounding errors in x and y:
+            x = round(x, 3), y = round(y, 3)) %>%
+    ### simplify scenarios
+    fmutate(scenario = ifelse(str_detect(scenario, 'baseline'), 'current', scenario),
+          scenario = str_replace(scenario, 'thetao_ssp[0-9]', 'rcp'))
+
+  write_parquet(df, consolidated_f)
+}
+
+ocean_t_df <- read_parquet(consolidated_f)
+```
+
+### Calculate Thermal Stressors
+
+For each species: given an Aphia ID, $T^a_{max}$, $T^p_{max}$, and vulnerability score (in a single row data frame):
+
+* Load SDM
+* Load appropriate temperature maps as long data frame: 
+    * `scenario` = `current`, `rcp45_2050`, `rcp85_2050`
+    * `t_mean` = mean annual temp for that scenario
+* Intersect temp map with SDM
+* Calculate stressor intensity (define separate function and to each column)
+* Multiply stressor intensity by vulnerability
+* Save out or combine with others in same group
+
+Consider: do these in taxonomic groups?  
+
+```{r}
+calc_therm_stress <- function(t, t_a_max, t_p_max, digits = 3) {
+  t_stress <- (t - t_p_max) / (t_a_max / t_p_max)
+  t_stress[t_stress < 0] <- 0
+  t_stress[t_stress > 1] <- 1
+  return(round(t_stress, digits))
+}
+
+sst_impact_spp <- function(spp_df, t_map, 
+                           scen = c('current', 'rcp45_2050', 'rcp85_2050')) {
+  spp_sdm <- get_sdm(spp_df$aphia_id, scenario = scen) %>%
+    pivot_longer(cols = scen, names_to = 'scenario', values_to = 'presence') %>%
+    fsubset(!is.na(presence)) %>%
+    select(aphia_id, x, y, scenario)
+  spp_t_map <- t_map %>%
+    collapse::join(spp_sdm, how = 'inner', on = c('x', 'y', 'scenario')) %>%
+    fmutate(therm_stress = calc_therm_stress(t = t_mean, t_a_max = spp_df$t_a_max, t_p_max = spp_df$t_p_max))
+  
+}
+
+
+spp_df <- thermal_niches[1, ]
+t_map <- ocean_t_df %>% fsubset(layer == 'seafloor')
+
+test <- sst_impact_spp(spp_df, t_map) %>%
+  select(x, y, scenario, therm_stress) %>%
+  pivot_wider(names_from = scenario, values_from = therm_stress)
+plot(rast(test))
+
+```
+
