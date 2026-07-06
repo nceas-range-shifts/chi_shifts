@@ -38,6 +38,15 @@ Make sure to manually add these to .gitignore!
 
 ```{r}
 hab_maps_dir <- here::here('_data_raw/halpern_2025/habitat_maps')
+
+if(dir.exists(hab_maps_dir)) {
+  ### check if any tifs; if not, delete and re-download
+  hab_maps_existing <- list.files(hab_maps_dir, pattern = '.tif$')
+  if(length(hab_maps_existing) == 0) {
+    unlink(hab_maps_dir, recursive = TRUE)
+  }
+}
+
 if(!dir.exists(hab_maps_dir)) {
   hab_maps_url <- 'https://knb.ecoinformatics.org/knb/d1/mn/v2/object/urn%3Auuid%3A8598ed8c-e906-47fb-8ba5-4edfed35df0f'
   destfile <- here::here('hab_maps.zip')
@@ -55,6 +64,15 @@ These are not rescaled.
 
 ```{r}
 prs_dir <- here::here('_data_raw/halpern_2025/pressures_raw')
+
+if(dir.exists(prs_dir)) {
+  ### check if any tifs; if not, delete and re-download
+  prs_maps_existing <- list.files(prs_dir, pattern = '.tif$')
+  if(length(prs_maps_existing) == 0) {
+    unlink(prs_dir, recursive = TRUE)
+  }
+}
+
 if(!dir.exists(prs_dir)) {
   prs_url <- 'https://knb.ecoinformatics.org/knb/d1/mn/v2/object/urn%3Auuid%3Aebbdaaa0-bfc8-42c5-8973-76379dd65ee7'
   destfile <- here::here('prs_raw.zip')
@@ -70,6 +88,14 @@ if(!dir.exists(prs_dir)) {
 
 ```{r}
 prs_rescaled_dir <- here::here('_data_raw/halpern_2025/pressures_rescaled')
+if(dir.exists(prs_rescaled_dir)) {
+  ### check if any tifs; if not, delete and re-download
+  prs_maps_existing <- list.files(prs_rescaled_dir, pattern = '.tif$')
+  if(length(prs_maps_existing) == 0) {
+    unlink(prs_rescaled_dir, recursive = TRUE)
+  }
+}
+
 if(!dir.exists(prs_rescaled_dir)) {
   prs_url <- 'https://knb.ecoinformatics.org/knb/d1/mn/v2/object/urn%3Auuid%3Acd2ce9a6-eaf4-4bb8-b3ca-09d253e036d9'
   destfile <- here::here('prs_raw.zip')
@@ -83,7 +109,7 @@ if(!dir.exists(prs_rescaled_dir)) {
 
 ```{r}
 cruft <- list.files(here::here('_data_raw/halpern_2025'), recursive = TRUE, include.dirs = TRUE,
-                      full.names = TRUE, pattern = '^\\.DS|^__MAC')
+                      full.names = TRUE, pattern = '^\\.DS|^__MAC|^~')
 
 unlink(cruft, recursive = TRUE)
 ```

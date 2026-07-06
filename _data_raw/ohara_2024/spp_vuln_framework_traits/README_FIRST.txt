@@ -1,1 +1,0 @@
-Data for this directory is assembled by script data_mgmt/data_access_vuln_traits.qmd.

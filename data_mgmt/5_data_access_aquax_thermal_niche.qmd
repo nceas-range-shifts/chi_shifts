@@ -24,6 +24,7 @@ Then, use `lapply` or the like to read all in and bind into a single massive dat
 ```{r}
 library(tidyverse)
 library(arrow)
+library(collapse)
 library(here)
 source(here('common_fxns.R'))
 ```
@@ -52,6 +53,8 @@ thermal_niche_f <- here('_data/thermal_niche/spp_thermal_niches.parquet')
 tmp_out_stem <- here('tmp/therm_niche/tmp_therm_niche_%s_%s_%s.csv')
 
 if(!file.exists(thermal_niche_f)) {
+  if(!dir.exists(dirname(tmp_out_stem))) dir.create(dirname(tmp_out_stem))
+    
   therm_niche_fs <- list.files(here_aquax('thermal_niche'), 
                                recursive = TRUE, pattern = '.Rdata$', full.names = TRUE)
   
@@ -61,16 +64,23 @@ if(!file.exists(thermal_niche_f)) {
 
 ### Read all temp files and bind into dataframe
 
-```{r}
+
+```{r bind all temp files}
 if(!file.exists(thermal_niche_f)) {
   tmp_csvs <- list.files(dirname(tmp_out_stem), full.names = TRUE)
+
+  big_ol_list <- parallel::mclapply(tmp_csvs, read.csv, mc.cores = 72) %>%
+    setNames(basename(tmp_csvs)) 
   
-  big_ol_df <- parallel::mclapply(tmp_csvs, read_csv, mc.cores = 72, show_col_types = FALSE) %>%
-    setNames(basename(tmp_csvs)) %>%
-    rowbind(idcol = 'f', fill = TRUE) %>%
-    mutate(wcol = str_extract(f, 'pelagic|benthic'),
-           src  = str_extract(f, 'bin|occ'),
-           aphia_id = str_extract(f, '[0-9]+') %>% as.numeric()) %>%
+  big_ol_df <- big_ol_list %>%
+    collapse::rowbind(idcol = 'f', fill = TRUE) 
+  
+  big_ol_df <- big_ol_df %>%
+    collapse::fmutate(
+      wcol = str_extract(f, 'pelagic|benthic'),
+      src  = str_extract(f, 'bin|occ'),
+      aphia_id = str_extract(f, '[0-9]+') %>% as.numeric()
+    ) %>%
     select(-f)
    
   write_parquet(big_ol_df, thermal_niche_f)
