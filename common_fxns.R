@@ -112,8 +112,7 @@ get_sdm <- function(aphia_id,
 sample_decomp <- function (moments = NULL, n = NULL, sample.mean = NULL, sample.sd = NULL, 
           sample.var = NULL, sample.skew = NULL, sample.kurt = NULL, 
           names = NULL, pooled = NULL, skew.type = NULL, kurt.type = NULL, 
-          kurt.excess = NULL, include.sd = FALSE) 
-{
+          kurt.excess = NULL, include.sd = FALSE) {
   if (!is.null(moments)) {
     if (!("moments" %in% class(moments))) {
       stop("Error: Input moments must be a moments object")
@@ -244,8 +243,10 @@ sample_decomp <- function (moments = NULL, n = NULL, sample.mean = NULL, sample.
     if (length(sample.var) != N) {
       stop("Error: Input sample.var must have the same length as n (if specified)")
     }
-    if (min(sample.var, na.rm = TRUE) < 0) {
-      stop("Error: Values in sample.var cannot be negative")
+    if(!all(is.na(sample.var))) {
+      if (min(sample.var, na.rm = TRUE) < 0) {
+        stop("Error: Values in sample.var cannot be negative")
+      }
     }
   }
   if (!is.null(sample.sd)) {
@@ -258,8 +259,10 @@ sample_decomp <- function (moments = NULL, n = NULL, sample.mean = NULL, sample.
     if (length(sample.sd) != N) {
       stop("Error: Input sample.sd must have the same length as n (if specified)")
     }
-    if (min(sample.sd, na.rm = TRUE) < 0) {
-      stop("Error: Values in sample.sd cannot be negative")
+    if(!all(is.na(sample.sd))) {
+      if (min(sample.sd, na.rm = TRUE) < 0) {
+        stop("Error: Values in sample.sd cannot be negative")
+      }
     }
   }
   if ((!is.null(sample.sd)) & (!is.null(sample.var))) {

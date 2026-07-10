@@ -223,9 +223,6 @@ For each species: given an Aphia ID, $T^a_{max}$, $T^p_{max}$, and vulnerability
 * Intersect temp map with SDM
 * Calculate stressor intensity (define separate function and to each column)
 * Multiply stressor intensity by vulnerability
-* Save out or combine with others in same group
-
-Consider: do these in taxonomic groups?  
 
 ```{r}
 calc_therm_stress <- function(t, t_a_max, t_p_max, digits = 3) {
@@ -243,18 +240,239 @@ sst_impact_spp <- function(spp_df, t_map,
     select(aphia_id, x, y, scenario)
   spp_t_map <- t_map %>%
     collapse::join(spp_sdm, how = 'inner', on = c('x', 'y', 'scenario')) %>%
-    fmutate(therm_stress = calc_therm_stress(t = t_mean, t_a_max = spp_df$t_a_max, t_p_max = spp_df$t_p_max))
+    fmutate(therm_stress = calc_therm_stress(t = t_mean, 
+                                             t_a_max = spp_df$t_a_max, 
+                                             t_p_max = spp_df$t_p_max))
   
 }
 
+```
 
-spp_df <- thermal_niches[1, ]
-t_map <- ocean_t_df %>% fsubset(layer == 'seafloor')
+### Iterate over taxa
 
-test <- sst_impact_spp(spp_df, t_map) %>%
-  select(x, y, scenario, therm_stress) %>%
-  pivot_wider(names_from = scenario, values_from = therm_stress)
-plot(rast(test))
+Consider: do these in taxonomic groups?  Break taxa into chunks of ~300 (more?), process each chunk and summarize; save as temp; then when all chunks done, read in and re-summarize.
 
+```{r}
+assign_chunks <- function(df, chunk_size = 500) {
+  tx_spp_count <- df$aphia_id %>% n_distinct()
+  
+  n_chunks <- max(1, round(tx_spp_count / chunk_size))
+  df_chunked <- df %>%
+    mutate(chunk = rep(1:n_chunks, length.out = tx_spp_count))
+  return(df_chunked)
+}
+
+sample_decomp2 <- function(df) {
+  ### MAJOR REWRITE - Claude suggestions for full vectorization and use of
+  ### collapse::fsum etc within group objects
+  
+  # df <- tx_tmp_dfs %>% fsubset(x < -170 & scenario == 'rcp45_2050')
+  g <- GRP(df, ~ x + y + scenario)
+  
+  n     <- df$n
+  mn    <- df$mean
+  var_i <- df$sd^2
+  skw   <- df$skew
+  krt   <- df$kurt
+  
+  ### broadcast pooled n and pooled mean back to row level (for deviations)
+  pool_n_bc    <- fsum(n, g = g, TRA = "replace")
+  pool_mean_bc <- fsum(n * mn, g = g, TRA = "replace") / pool_n_bc
+  deviation    <- mn - pool_mean_bc
+  
+  SS <- (n - 1) * var_i
+  SS[n == 1] <- 0
+  
+  ### group-level pooled n / mean / var / sd
+  pool_n    <- fsum(n, g = g)
+  pool_mean <- fsum(n * mn, g = g) / pool_n
+  pool_dev_sum <- fsum(n * deviation^2, g = g)
+  pool_SS   <- fsum(SS, g = g) + pool_dev_sum
+  pool_var  <- pool_SS / (pool_n - 1)
+  pool_sd   <- sqrt(pool_var)
+  
+  # ### skew
+  # SC        <- skw * SS^1.5 / sqrt(n)
+  # SC[n <= 2] <- 0
+  # pool_SC   <- fsum(SC, g = g) + 3 * fsum(SS * deviation, g = g) + fsum(n * deviation^3, g = g)
+  # pool_skew <- sqrt(pool_n) * pool_SC / pool_SS^1.5
+  # 
+  # ### kurtosis
+  # SQ        <- krt * SS^2 / n
+  # SQ[n == 1] <-  0
+  # pool_SQ   <- fsum(SQ, g = g) + 4 * fsum(SC * deviation, g = g) +
+  #              6 * fsum(SS * deviation^2, g = g) + fsum(n * deviation^4, g = g)
+  # pool_kurt <- pool_n * pool_SQ / pool_SS^2
+  
+  summary_df <- cbind(
+    g$groups,
+    n    = pool_n,
+    mean = pool_mean,
+    sd   = pool_sd  #,
+    # skew = pool_skew,
+    # kurt = pool_kurt
+  )
+  
+  return(summary_df)
+}
+```
+
+```{r}
+
+t_map_list <- list(
+  pelagic = ocean_t_df %>% fsubset(layer == 'surface'),
+  benthic = ocean_t_df %>% fsubset(layer == 'seafloor')
+)
+
+```
+
+```{r}
+
+spp_envelope_df <- get_spp_vuln() %>%
+  select(aphia_id, taxon) %>%
+  distinct() %>%
+  inner_join(thermal_niches, by = 'aphia_id')
+tx_vec <- spp_envelope_df$taxon %>% unique() %>% sort()
+  
+tx_sst_filestem <- here('_output/impact_maps/impact_by_taxon/impact_sst_%s.parquet')
+
+for(tx in tx_vec) {
+  ### tx <- tx_vec[2]
+  tx_sst_file <- sprintf(tx_sst_filestem, tx)
+  if(file.exists(tx_sst_file)) next()
+  
+  # break into chunks of size ~500?
+  tx_df <- spp_envelope_df %>%
+    filter(taxon == tx) %>%
+    assign_chunks()
+  
+  chunk_vec <- tx_df$chunk %>% unique() %>% sort()
+  
+  tmp_tx_sst_fstem <- here('tmp/impact_sst/impact_sst_%s_%s.parquet')
+  if(!dir.exists(dirname(tmp_tx_sst_fstem))) dir.create(dirname(tmp_tx_sst_fstem))
+  for(i in chunk_vec) {
+    ### i <- chunk_vec[1]
+    tmp_tx_sst_file <- sprintf(tmp_tx_sst_fstem, tx, i)
+    if(file.exists(tmp_tx_sst_file)) next()
+
+    
+    tx_chunk_df <- tx_df %>%
+      filter(chunk == i)
+    spp_vec <- tx_chunk_df$aphia_id
+    
+    set_collapse(nthreads = 1)
+    spp_therm_impact_list <- parallel::mclapply(
+      mc.cores = 64,
+      X = spp_vec,
+      FUN = \(x) {
+        ### x <- spp_vec[1]
+        spp_df <- tx_chunk_df %>% fsubset(aphia_id == x)
+        t_map  <- t_map_list[[spp_df$wcol]]
+        out_df <- sst_impact_spp(spp_df, t_map)
+        return(out_df)
+      })
+    set_collapse(nthreads = 4)
+    
+    ### process list into df, then summarize across scenarios
+    tx_chunk_therm_impact_df <- spp_therm_impact_list %>%
+      collapse::rowbind() %>%
+      select(x, y, scenario, therm_stress)
+    tx_chunk_summary_df <- tx_chunk_therm_impact_df %>%
+      fgroup_by(x, y, scenario) %>%
+      qsu(higher = FALSE) %>%
+      as.data.frame() %>%
+      tidyr::extract(Variable,
+                     into = c("x", "y", "scenario"),
+                     regex = "^(-?\\d+\\.\\d+)\\.(-?\\d+\\.\\d+)\\.(.+)$",
+                     remove = TRUE) %>%
+      fmutate(x = as.numeric(x), y = as.numeric(y))
+    
+    ### write out temp file
+    write_parquet(tx_chunk_summary_df, tmp_tx_sst_file)
+  } ### END LOOP OVER CHUNKS
+  
+  
+  
+  ###############################
+  ###   Assemble temp files   ###
+  ###############################
+  ### read in all summary chunks, bind together, and resummarize
+  tx_tmp_fs <- list.files(dirname(tmp_tx_sst_fstem),
+                          pattern = paste0('impact_sst_', tx),
+                          full.names = TRUE)
+
+  ### small taxon, only one chunk, just pivot longer and save out
+  if(length(chunk_vec) == 1 & length(tx_tmp_fs) == 1) {
+    tmp_df <- read_parquet(tx_tmp_fs) %>%
+      janitor::clean_names() %>%
+      select(x, y, scenario, n, mean, sd) %>%
+      pivot_longer(n:sd, names_to = 'stat', values_to = 'value') %>%
+      pivot_wider(names_from = 'scenario', values_from = 'value')
+                       
+    write_parquet(tmp_df, tx_sst_file)
+    stopifnot(file.exists(tx_sst_file))
+    unlink(tx_tmp_fs)
+    next()
+  }
+  
+  if(length(chunk_vec) != length(tx_tmp_fs)) stop('Mismatch between chunk length and temp file length!')
+  
+  # system.time({
+  # ### larger taxon, multiple chunks
+  # tx_tmp_dfs1 <- parallel::mclapply(tx_tmp_fs, read_parquet, 
+  #                                  mc.cores = min(length(tx_tmp_fs), 24)) %>%
+  #   rowbind() %>%
+  #   janitor::clean_names() %>%
+  #   fsubset(n > 0) 
+  # }) ### 27 s
+  
+  # system.time({
+  tx_tmp_dfs <- arrow::open_dataset(tx_tmp_fs) %>%
+    rename_with(janitor::make_clean_names) %>%   
+    filter(n > 0) %>%                            ### pushed down to Arrow, not R
+    collect()                                    ### materializes only the filtered rows
+  # }) ### 0.6 s! for identical results
+  
+
+  set_collapse(nthreads = 4)
+  
+  system.time({
+  tx_summary_df1 <- tx_tmp_dfs %>%
+    fsubset(scenario == 'rcp45_2050' & x < -170) %>%
+    fgroup_by(x, y, scenario) %>%
+    fsummarize(
+      ### sample_decomp() is from common_fxns.R, rewritten
+      ### to fix NA errors in utilities::sample.decomp()
+      sample_decomp(n = n,
+                    sample.mean = mean, sample.sd   = sd,
+                    sample.skew = skew, sample.kurt = kurt,
+                    include.sd = TRUE)
+    ) %>%
+    select(-sample.var) %>%
+    setNames(str_remove(names(.), 'sample.'))
+  })  ### 62.572s
+
+  system.time({
+    tx_summary_df2 <- tx_tmp_dfs %>%
+      fsubset(scenario == 'rcp45_2050' & x < -170) %>%
+      sample_decomp2()
+  })  ### 7.87 s
+  f <- \(x) ifelse(is.na(x), NA, round(x, 4))
+  xx <- tx_summary_df1 %>% mutate(across(where(is.numeric), f)) %>% arrange(x, y, scenario) %>% as.data.frame()
+  yy <- tx_summary_df2 %>% mutate(across(where(is.numeric), f)) %>%  arrange(x, y, scenario) %>% as.data.frame()
+  row.names(yy) <- NULL
+  identical(xx, yy)
+  zz <- anti_join(xx, yy)
+  qq <- full_join(xx, yy, by = c('x', 'y', 'scenario')) %>% inner_join(zz)
+  
+  system.time({
+  tx_summary_df <- tx_tmp_dfs %>% 
+    sample_decomp2()
+})
+  
+  write_parquet(tx_summary_df, tx_sst_file)
+  unlink(tx_tmp_fs)
+  
+}
 ```
 
