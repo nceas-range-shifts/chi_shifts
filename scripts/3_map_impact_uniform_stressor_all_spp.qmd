@@ -59,66 +59,82 @@ str_mapfs  <- list.files(here('_data_raw/halpern_2025/pressures_rescaled'), patt
 str_dists  <- basename(str_mapfs) %>% str_remove_all('_ssp[0-9].+') %>% unique()
 ```
 
+
+```{r}
+calc_impacts <- function(vuln_f, str_f, 
+                         scenarios = c('current', 'rcp45_2050', 'rcp85_2050'), 
+                         out_f, overwrite = FALSE) {
+  
+  if(file.exists(out_f) & !overwrite) {
+    return(read_parquet(out_f))
+  }
+  
+  vuln_df <- read_parquet(vuln_f)
+
+  vuln_mean_df <- vuln_df %>% fsubset(stat == 'mean') %>% select(-stat)
+  vuln_sd_df   <- vuln_df %>% fsubset(stat == 'sd')   %>% select(-stat)
+
+  vuln_mean_r <- rast(vuln_mean_df, crs = 'epsg:4326')
+  vuln_sd_r   <- rast(vuln_sd_df,   crs = 'epsg:4326')
+
+  str_dist <- rast(str_f) %>% setNames(scenarios) %>% project(vuln_mean_r)
+
+  impact_mean_r <- vuln_mean_r * str_dist
+  impact_sd_r   <- vuln_sd_r   * str_dist
+
+  impact_df <- as.data.frame(impact_mean_r, xy = TRUE) %>%
+    fmutate(stat = 'mean') %>%
+    rowbind(as.data.frame(impact_sd_r, xy = TRUE) %>%
+              fmutate(stat = 'sd')) %>%
+    fmutate(across(where(is.numeric), \(x) round(x, 3)))
+
+  write_parquet(impact_df, out_f)
+  return(impact_df)
+}
+
+plot_from_df <- function(df, plotstat = 'mean') {
+  if('stat' %in% names(df)) df <- fsubset(df, stat == plotstat) %>% select(x, y, everything(), -stat)
+  r <- rast(df)
+  plot(r)
+}
+```
+
 ### Marine Heat Waves
 ```{r}
-mhw_vuln_df <- read_parquet(vuln_mapfs[str_detect(vuln_mapfs, 'marine_heat_waves')]) %>%
-  fsubset(stat == 'mean') %>% select(-stat)
-mhw_vuln <- rast(mhw_vuln_df, crs = 'epsg:4326')
-plot(mhw_vuln)
-```
-
-```{r}
+mhw_vuln_f <- vuln_mapfs[str_detect(vuln_mapfs, 'marine_heat_waves')]
 mhw_maps <- str_mapfs[str_detect(str_mapfs, 'sst-extremes') & str_detect(str_mapfs, 'ssp245_current|medium-term')]
-mhw_dist <- rast(mhw_maps) %>% setNames(scenarios) %>% project(mhw_vuln)
-plot(mhw_dist)
+
+mhw_impact_df <- calc_impacts(vuln_f = mhw_vuln_f,
+                              str_f  = mhw_maps,
+                              out_f  = here('_output/impact_maps/impact_marine_heat_waves.parquet'))
+
+plot_from_df(mhw_impact_df)
+plot_from_df(mhw_impact_df, plotstat = 'sd')
 ```
-
-```{r}
-mhw_impact <- mhw_vuln * mhw_dist
-
-plot(mhw_impact)
-```
-
-
 
 ### Nutrient Pollution
 ```{r}
-nutr_vuln_df <- read_parquet(vuln_mapfs[str_detect(vuln_mapfs, 'nutrient_pollution')]) %>%
-  fsubset(stat == 'mean') %>% select(-stat)
-nutr_vuln <- rast(nutr_vuln_df, crs = 'epsg:4326')
-plot(nutr_vuln)
-```
-
-```{r}
+nutr_vuln_f <- vuln_mapfs[str_detect(vuln_mapfs, 'nutrient_pollution')]
 nutr_maps <- str_mapfs[str_detect(str_mapfs, 'nutrient-input') & str_detect(str_mapfs, 'ssp2_current|medium-term')]
-nutr_dist <- rast(nutr_maps) %>% setNames(scenarios) %>% project(nutr_vuln)
-plot(nutr_dist)
-```
 
-```{r}
-nutr_impact <- nutr_vuln * nutr_dist
-
-plot(nutr_impact)
+nutr_impact_df <- calc_impacts(vuln_f = nutr_vuln_f,
+                              str_f   = nutr_maps,
+                              out_f   = here('_output/impact_maps/impact_nutrient_pollution.parquet'))
+plot_from_df(nutr_impact_df)
+plot_from_df(nutr_impact_df, plotstat = 'sd')
 ```
 
 ### Ocean Acidification
 
 ```{r}
-oa_vuln_df <- read_parquet(vuln_mapfs[str_detect(vuln_mapfs, '_oa\\.')]) %>%
-  fsubset(stat == 'mean') %>% select(-stat)
-oa_vuln <- rast(oa_vuln_df, crs = 'epsg:4326')
-plot(oa_vuln)
-```
+oa_vuln_f <- vuln_mapfs[str_detect(vuln_mapfs, '_oa\\.')]
 
-```{r}
 oa_maps <- str_mapfs[str_detect(basename(str_mapfs), '^oa_') & str_detect(str_mapfs, 'ssp245_current|medium-term')]
-oa_dist <- rast(oa_maps) %>% setNames(scenarios) %>% project(oa_vuln)
-plot(oa_dist)
-```
 
-```{r}
-oa_impact <- oa_vuln * oa_dist
-
-plot(oa_impact) 
+oa_impact_df <- calc_impacts(vuln_f = oa_vuln_f,
+                             str_f  = oa_maps,
+                             out_f  = here('_output/impact_maps/impact_ocean_acidification.parquet'))
+plot_from_df(oa_impact_df)
+plot_from_df(oa_impact_df, plotstat = 'sd')
 ```
 

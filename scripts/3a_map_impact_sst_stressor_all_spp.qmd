@@ -82,7 +82,7 @@ spp_wcol <- benth_pel_check %>%
 
 ### Generate temperature bins
 
-Thermal niches from AquaX Dropbox, processed and rounded to identify species with similar niches.  Thermal niche defined in same way as O'Hara et al. 2024 (taken from AquaMaps):
+Thermal niches from AquaX Dropbox.  Thermal stressor defined in same way as O'Hara et al. 2024 (taken from AquaMaps):
 
 $$s_T = \begin{cases}
   0 &\text{where }\bar T \leq T_{max}^{p}\\
@@ -98,53 +98,15 @@ Where:
 But: the AquaX data only has 75%ile and 95%ile, not 90%ile.  Let's use 75%ile instead (for now).
                
 ```{r}
-thermal_niches_raw <- read_parquet(here('_data/thermal_niche/spp_thermal_niches.parquet')) %>%
+thermal_niches <- read_parquet(here('_data/thermal_niche/spp_thermal_niches.parquet')) %>%
   fsubset(variable == 'thetao_mean') %>%
   inner_join(spp_wcol, by = c('aphia_id', 'wcol')) %>%
   mutate(t_a_max = q75 + (q75-q25)*1.5,
          t_a_max = ifelse(t_a_max > max, max, t_a_max),
          t_p_max = q75) %>%
   select(t_a_max, t_p_max, aphia_id, wcol, src)
-
-src_range_check <- thermal_niches_raw %>%
-  group_by(aphia_id) %>%
-  arrange(src) %>%
-  summarize(wcol = first(wcol),
-            t_a_range = first(t_a_max) - last(t_a_max),
-            t_p_range = first(t_p_max) - last(t_p_max),
-            n_src = n_distinct(src), .groups = 'drop')
-
-hist(src_range_check$t_a_range); hist(src_range_check$t_p_range)
-weird <- src_range_check %>% filter(abs(t_a_range) > 20 | abs(t_p_range) > 20) %>%
-  left_join(aquax_meta)
 ```
 
-### Round thermal envelope and form bins
-
-```{r}
-thermal_niches <- thermal_niches_raw %>%
-  filter(src == 'occ') %>% 
-  select(-src) %>%
-  mutate(t_a_max = round(t_a_max * 2) / 2,
-         t_p_max = round(t_p_max * 2) / 2) %>%
-  mutate(t_a_max = round(t_a_max),
-         t_p_max = round(t_p_max)) %>%
-  mutate(range = t_a_max - t_p_max)
-
-bins <- thermal_niches %>% 
-  group_by(t_a_max, t_p_max) %>%
-  summarize(nspp = n_distinct(aphia_id))
-### half-degree bins: 1213 different envelopes
-### one-degree bins: 338 different envelopes
-```
-
-
-***QUESTION***: why are we missing some species? 31246 have thermal preferences; but 31509 spp in AquaX.  Re-`rclone`?
-
-```{r}
-missing <- aquax_meta %>%
-  filter(!aphia_id %in% thermal_niches$aphia_id)
-```
 
 ### Load Thermal Layers
 
@@ -272,8 +234,6 @@ sample_decomp2 <- function(df) {
   n     <- df$n
   mn    <- df$mean
   var_i <- df$sd^2
-  skw   <- df$skew
-  krt   <- df$kurt
   
   ### broadcast pooled n and pooled mean back to row level (for deviations)
   pool_n_bc    <- fsum(n, g = g, TRA = "replace")
@@ -291,26 +251,11 @@ sample_decomp2 <- function(df) {
   pool_var  <- pool_SS / (pool_n - 1)
   pool_sd   <- sqrt(pool_var)
   
-  # ### skew
-  # SC        <- skw * SS^1.5 / sqrt(n)
-  # SC[n <= 2] <- 0
-  # pool_SC   <- fsum(SC, g = g) + 3 * fsum(SS * deviation, g = g) + fsum(n * deviation^3, g = g)
-  # pool_skew <- sqrt(pool_n) * pool_SC / pool_SS^1.5
-  # 
-  # ### kurtosis
-  # SQ        <- krt * SS^2 / n
-  # SQ[n == 1] <-  0
-  # pool_SQ   <- fsum(SQ, g = g) + 4 * fsum(SC * deviation, g = g) +
-  #              6 * fsum(SS * deviation^2, g = g) + fsum(n * deviation^4, g = g)
-  # pool_kurt <- pool_n * pool_SQ / pool_SS^2
-  
   summary_df <- cbind(
     g$groups,
     n    = pool_n,
     mean = pool_mean,
-    sd   = pool_sd  #,
-    # skew = pool_skew,
-    # kurt = pool_kurt
+    sd   = pool_sd
   )
   
   return(summary_df)
@@ -337,7 +282,7 @@ tx_vec <- spp_envelope_df$taxon %>% unique() %>% sort()
 tx_sst_filestem <- here('_output/impact_maps/impact_by_taxon/impact_sst_%s.parquet')
 
 for(tx in tx_vec) {
-  ### tx <- tx_vec[2]
+  ### tx <- tx_vec[1]
   tx_sst_file <- sprintf(tx_sst_filestem, tx)
   if(file.exists(tx_sst_file)) next()
   
@@ -379,13 +324,10 @@ for(tx in tx_vec) {
       select(x, y, scenario, therm_stress)
     tx_chunk_summary_df <- tx_chunk_therm_impact_df %>%
       fgroup_by(x, y, scenario) %>%
-      qsu(higher = FALSE) %>%
-      as.data.frame() %>%
-      tidyr::extract(Variable,
-                     into = c("x", "y", "scenario"),
-                     regex = "^(-?\\d+\\.\\d+)\\.(-?\\d+\\.\\d+)\\.(.+)$",
-                     remove = TRUE) %>%
-      fmutate(x = as.numeric(x), y = as.numeric(y))
+      ### since skipping skew and kurtosis, skip qsu() and just go straight for fsummarize:
+      fsummarize(n    = fnobs(therm_stress), 
+                 mean = fmean(therm_stress), 
+                 sd   = fsd(therm_stress))
     
     ### write out temp file
     write_parquet(tx_chunk_summary_df, tmp_tx_sst_file)
@@ -407,6 +349,7 @@ for(tx in tx_vec) {
       janitor::clean_names() %>%
       select(x, y, scenario, n, mean, sd) %>%
       pivot_longer(n:sd, names_to = 'stat', values_to = 'value') %>%
+      fmutate(value = round(value, 4)) %>%
       pivot_wider(names_from = 'scenario', values_from = 'value')
                        
     write_parquet(tmp_df, tx_sst_file)
@@ -417,62 +360,39 @@ for(tx in tx_vec) {
   
   if(length(chunk_vec) != length(tx_tmp_fs)) stop('Mismatch between chunk length and temp file length!')
   
-  # system.time({
-  # ### larger taxon, multiple chunks
-  # tx_tmp_dfs1 <- parallel::mclapply(tx_tmp_fs, read_parquet, 
-  #                                  mc.cores = min(length(tx_tmp_fs), 24)) %>%
-  #   rowbind() %>%
-  #   janitor::clean_names() %>%
-  #   fsubset(n > 0) 
-  # }) ### 27 s
-  
-  # system.time({
+  ### More spp - more chunks - use arrow::open_dataset to more quickly read in and
+  ### process before even getting data into R
   tx_tmp_dfs <- arrow::open_dataset(tx_tmp_fs) %>%
     rename_with(janitor::make_clean_names) %>%   
     filter(n > 0) %>%                            ### pushed down to Arrow, not R
     collect()                                    ### materializes only the filtered rows
-  # }) ### 0.6 s! for identical results
-  
 
   set_collapse(nthreads = 4)
   
   system.time({
-  tx_summary_df1 <- tx_tmp_dfs %>%
-    fsubset(scenario == 'rcp45_2050' & x < -170) %>%
-    fgroup_by(x, y, scenario) %>%
-    fsummarize(
-      ### sample_decomp() is from common_fxns.R, rewritten
-      ### to fix NA errors in utilities::sample.decomp()
-      sample_decomp(n = n,
-                    sample.mean = mean, sample.sd   = sd,
-                    sample.skew = skew, sample.kurt = kurt,
-                    include.sd = TRUE)
-    ) %>%
-    select(-sample.var) %>%
-    setNames(str_remove(names(.), 'sample.'))
-  })  ### 62.572s
-
-  system.time({
-    tx_summary_df2 <- tx_tmp_dfs %>%
-      fsubset(scenario == 'rcp45_2050' & x < -170) %>%
-      sample_decomp2()
-  })  ### 7.87 s
-  f <- \(x) ifelse(is.na(x), NA, round(x, 4))
-  xx <- tx_summary_df1 %>% mutate(across(where(is.numeric), f)) %>% arrange(x, y, scenario) %>% as.data.frame()
-  yy <- tx_summary_df2 %>% mutate(across(where(is.numeric), f)) %>%  arrange(x, y, scenario) %>% as.data.frame()
-  row.names(yy) <- NULL
-  identical(xx, yy)
-  zz <- anti_join(xx, yy)
-  qq <- full_join(xx, yy, by = c('x', 'y', 'scenario')) %>% inner_join(zz)
-  
-  system.time({
   tx_summary_df <- tx_tmp_dfs %>% 
-    sample_decomp2()
-})
-  
+    sample_decomp2() %>%
+    pivot_longer(n:sd, names_to = 'stat', values_to = 'value') %>%
+    fmutate(value = round(value, 4)) %>%
+    pivot_wider(names_from = 'scenario', values_from = 'value')
+  })
   write_parquet(tx_summary_df, tx_sst_file)
   unlink(tx_tmp_fs)
   
 }
+```
+
+### Combine taxon-level into all spp impact
+
+Read in all Parquet files for taxon-level; use `sample_decomp2()` to recombine for each scenario.
+
+```{r}
+tx_sst_impact_fs <- list.files(here('_output/impact_maps/impact_by_taxon'), 
+                               pattern = 'impact_sst.+.parquet', full.names = TRUE)
+tx_sst_impacts_df <- parallel::mclapply(tx_sst_impact_fs, mc.cores = length(tx_sst_impact_fs),
+                                        FUN = read_parquet) %>%
+  rowbind()
+
+
 ```
 
