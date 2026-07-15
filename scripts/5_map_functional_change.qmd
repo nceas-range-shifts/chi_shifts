@@ -17,6 +17,7 @@ For each pixel, identify for each scenario the changes in functional entity comp
     * $a$ is FEs shared by both sites (scenarios) - persistence
     * $b$ is FEs unique to first site (current) - extirpation
     * $c$ is FEs unique to second site (scenario) - colonization
+* Novelty: which, if any, FE combos exist in future scenarios that don't currently exist?
 
 ## Data
 
@@ -417,5 +418,120 @@ ggplot(sample_df, aes(x = ssi_rcp45_spp, y = ssi_rcp45_fe, color = log10(nspp_rc
   scale_color_viridis_c(breaks = 0:4, labels = c('1', '10', '100', '1000', '10000')) +
   theme_minimal() +
   labs(x = 'SSI (spp, rcp4.5)', y = 'SSI (fe, rcp4.5)', color = 'N_spp (rcp4.5, 2050)')
+```
+
+### Novel FEs
+
+Identify FE combinations in future scenarios with no current analog; similarly, identify FE combos in current with no future analogs.
+
+Read in all FE maps 
+
+* read in, flatten to just which pixels the FE is in and assign FE number column
+    * Turnover files are in extirpation/persistence/colonization stats
+    * current = persistence + extirpation
+    * future = persistence + colonization
+* join with all other FEs
+* Group by pixel and summarize the set of FEs to a unique identifier (string, hash, or vector of integers?)
+* Then group by FE strings, summarize how many pixels
+
+```{r}
+flatten_fe <- function(f) {
+  ### f <- fe_files_df$f[20]
+  fe_df <- read_parquet(f) %>%
+    pivot_wider(names_from = stat, values_from = c(rcp45_2050, rcp85_2050)) %>%
+    fmutate(exists_current = (rcp45_2050_extirpation | rcp45_2050_persistence),
+        exists_rcp45_2050 = (rcp45_2050_persistence | rcp45_2050_colonization),
+        exists_rcp85_2050 = (rcp85_2050_persistence | rcp85_2050_colonization)) %>%
+    select(x, y, starts_with('exists'))
+  
+  return(fe_df)
+}
+
+```
+
+```{r}
+novel_fe_f <- here('_output/fe_turnover_maps/fe_novelty_maps.parquet')
+if(!file.exists(novel_fe_f)) {
+  
+  fe_turnover_fstem <- here('_output/fe_turnover_maps/turnover_by_fe/fe_turnover_%s.parquet')
+
+  fe_files_df <- spp_fe_df %>%
+    select(fe, n) %>%
+    distinct() %>%
+    mutate(id = 1:n(),
+           f  = sprintf(fe_turnover_fstem, fe))
+  
+  collapse::set_collapse(nthreads = 1)
+  fe_maps <- parallel::mclapply(
+    mc.cores = 64,
+      X = fe_files_df$f, 
+      FUN = flatten_fe) %>%
+    setNames(fe_files_df$id) %>%
+    rowbind(idcol = 'fe_id')
+    
+  xvec <- seq(-180, +180, by = 0.05)
+  
+  fe_members_map <- parallel::mclapply(mc.cores = 100,
+    X = xvec, 
+    FUN = \(z) {
+      fe_maps %>%
+        ### surround x since some issues matching x values directly?
+        fsubset(x > z & x < z + .05) %>%
+        fgroup_by(x, y) %>%
+        fsummarize(current = paste0(fe_id[exists_current], collapse = ';'),
+                   rcp45_2050 = paste0(fe_id[exists_rcp45_2050], collapse = ';'),
+                   rcp85_2050 = paste0(fe_id[exists_rcp85_2050], collapse = ';'))
+    }) %>%
+    rowbind()
+  
+  write_parquet(fe_members_map, 'tmp.parquet')
+  
+  fe_members_map <- read_parquet('tmp.parquet')
+  
+  fe_current <- fe_members_map$current %>% unique()
+  fe_rcp45 <- fe_members_map$rcp45_2050 %>% unique()
+  fe_rcp85 <- fe_members_map$rcp85_2050 %>% unique()
+  
+  novel_rcp45 <- fe_rcp45_2050[!fe_rcp45 %in% fe_current]
+  novel_rcp85 <- fe_rcp85_2050[!fe_rcp85 %in% fe_current]
+  lost_rcp45  <- fe_current[!current %in% fe_rcp45]
+  lost_rcp85  <- fe_current[!current %in% fe_rcp85]
+
+    
+}
+```
+
+```{r}
+library(Matrix)
+
+# 1. Compact entity IDs to 1..321 (skip if id_vec is already a dense 1..321 integer)
+entity_levels <- sort(unique(df$id_vec))
+entity_int <- as.integer(factor(df$id_vec, levels = entity_levels))
+n_entities <- length(entity_levels)   # 321
+
+# 2. Group rows by pixel (fast radix grouping, no string ops)
+g <- GRP(df, ~ x + y)
+ngroups <- g$N.groups
+
+# 3. Sparse pixel x entity indicator matrix
+#    (duplicate i,j pairs, e.g. repeated entity rows per pixel, are summed
+#     automatically -- irrelevant since we only care about nonzero)
+M <- sparseMatrix(i = g$group.id, j = entity_int, x = 1,
+                   dims = c(ngroups, n_entities))
+
+# 4. Pack entities into blocks of 31 bits each -> few integer columns
+block_size <- 31L
+nblocks    <- ceiling(n_entities / block_size)
+bit_pos    <- (seq_len(n_entities) - 1L) %% block_size
+block_idx  <- (seq_len(n_entities) - 1L) %/% block_size + 1L
+
+W <- sparseMatrix(i = seq_len(n_entities), j = block_idx,
+                   x = 2^bit_pos, dims = c(n_entities, nblocks))
+
+packed <- as.matrix(M %*% W)          # ngroups x nblocks, exact integers as doubles
+storage.mode(packed) <- "integer"     # compact; safe, values < 2^31
+
+# 5. Attach back to pixel coordinates
+result <- data.frame(g$groups, packed)
 ```
 
