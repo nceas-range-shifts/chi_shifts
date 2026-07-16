@@ -43,6 +43,7 @@ library(here)
 library(duckdb) 
 library(arrow)
 library(collapse)
+library(Matrix)
 library(terra)
 
 source(here('common_fxns.R'))
@@ -447,91 +448,115 @@ flatten_fe <- function(f) {
   return(fe_df)
 }
 
+entities_to_keys <- function(df, n_entities) {
+  ### df is x, y, and ID per cell, for a given scenario
+
+  ### Group rows by pixel (fast radix grouping, no string ops)
+  g <- GRP(df, ~ x + y)
+  ngroups <- g$N.groups
+  
+  ### Sparse pixel x entity indicator matrix
+  #    (duplicate i,j pairs, e.g. repeated entity rows per pixel, are summed
+  #     automatically -- irrelevant since we only care about nonzero)
+  M <- sparseMatrix(i = g$group.id, j = df$fe_id, x = 1,
+                    dims = c(ngroups, n_entities))
+
+  ### Pack entities into blocks of 31 bits each -> few integer columns
+  block_size <- 31L
+  nblocks    <- ceiling(n_entities / block_size)
+  bit_pos    <- (seq_len(n_entities) - 1L) %% block_size
+  block_idx  <- (seq_len(n_entities) - 1L) %/% block_size + 1L
+  
+  W <- sparseMatrix(i = seq_len(n_entities), j = block_idx,
+                     x = 2^bit_pos, dims = c(n_entities, nblocks))
+  
+  packed <- as.matrix(M %*% W)          # ngroups x nblocks, exact integers as doubles
+  storage.mode(packed) <- "integer"     # compact; safe, values < 2^31
+
+  ### combine vectorized across columns, no per-row loop
+  key <- do.call(stringi::stri_c, c(as.data.frame(packed), sep = "_"))
+  
+  ### Attach back to pixel coordinates
+  result <- data.frame(g$groups, bitset_key = key)
+}
+
 ```
 
 ```{r}
 novel_fe_f <- here('_output/fe_turnover_maps/fe_novelty_maps.parquet')
 if(!file.exists(novel_fe_f)) {
   
-  fe_turnover_fstem <- here('_output/fe_turnover_maps/turnover_by_fe/fe_turnover_%s.parquet')
-
-  fe_files_df <- spp_fe_df %>%
-    select(fe, n) %>%
-    distinct() %>%
-    mutate(id = 1:n(),
-           f  = sprintf(fe_turnover_fstem, fe))
+  fe_keys_f <- here('_output/fe_turnover_maps/fe_entity_keys.parquet')
+  if(!file.exists(fe_keys_f)) {
   
-  collapse::set_collapse(nthreads = 1)
-  fe_maps <- parallel::mclapply(
-    mc.cores = 64,
-      X = fe_files_df$f, 
-      FUN = flatten_fe) %>%
-    setNames(fe_files_df$id) %>%
-    rowbind(idcol = 'fe_id')
+    fe_turnover_fstem <- here('_output/fe_turnover_maps/turnover_by_fe/fe_turnover_%s.parquet')
+  
+    fe_files_df <- spp_fe_df %>%
+      select(fe, n) %>%
+      distinct() %>%
+      mutate(id = 1:n(),
+             f  = sprintf(fe_turnover_fstem, fe))
     
-  xvec <- seq(-180, +180, by = 0.05)
-  
-  fe_members_map <- parallel::mclapply(mc.cores = 100,
-    X = xvec, 
-    FUN = \(z) {
-      fe_maps %>%
-        ### surround x since some issues matching x values directly?
-        fsubset(x > z & x < z + .05) %>%
-        fgroup_by(x, y) %>%
-        fsummarize(current = paste0(fe_id[exists_current], collapse = ';'),
-                   rcp45_2050 = paste0(fe_id[exists_rcp45_2050], collapse = ';'),
-                   rcp85_2050 = paste0(fe_id[exists_rcp85_2050], collapse = ';'))
-    }) %>%
-    rowbind()
-  
-  write_parquet(fe_members_map, 'tmp.parquet')
-  
-  fe_members_map <- read_parquet('tmp.parquet')
-  
-  fe_current <- fe_members_map$current %>% unique()
-  fe_rcp45 <- fe_members_map$rcp45_2050 %>% unique()
-  fe_rcp85 <- fe_members_map$rcp85_2050 %>% unique()
-  
-  novel_rcp45 <- fe_rcp45_2050[!fe_rcp45 %in% fe_current]
-  novel_rcp85 <- fe_rcp85_2050[!fe_rcp85 %in% fe_current]
-  lost_rcp45  <- fe_current[!current %in% fe_rcp45]
-  lost_rcp85  <- fe_current[!current %in% fe_rcp85]
-
+    collapse::set_collapse(nthreads = 1)
+    fe_maps <- parallel::mclapply(
+      mc.cores = 64,
+        X = fe_files_df$f, 
+        FUN = flatten_fe) %>%
+      setNames(fe_files_df$id) %>%
+      rowbind(idcol = 'fe_id')
+      
+    fe_map_current <- fe_maps %>%
+      fsubset(exists_current) %>%
+      select(x, y, fe_id)
+    fe_keys_current <- entities_to_keys(fe_map_current, n_entities = length(fe_files_df$id)) %>%
+      rename(current = bitset_key)
+    fe_map_rcp45 <- fe_maps %>%
+      fsubset(exists_rcp45_2050) %>%
+      select(x, y, fe_id)
+    fe_keys_rcp45 <- entities_to_keys(fe_map_rcp45, n_entities = length(fe_files_df$id)) %>%
+      rename(rcp45_2050 = bitset_key)
+    fe_map_rcp85 <- fe_maps %>%
+      fsubset(exists_rcp85_2050) %>%
+      select(x, y, fe_id)
+    fe_keys_rcp85 <- entities_to_keys(fe_map_rcp85, n_entities = length(fe_files_df$id)) %>%
+      rename(rcp85_2050 = bitset_key)
     
+    fe_keys_all <- fe_keys_current %>%
+      collapse::join(fe_keys_rcp45, how = 'full', on = c('x', 'y')) %>%
+      collapse::join(fe_keys_rcp85, how = 'full', on = c('x', 'y'))
+    
+    write_parquet(fe_keys_all, fe_keys_f)
+  }
+  
+  fe_keys_all <- read_parquet(fe_keys_f)
+  
+  fe_agg_current <- fe_keys_all$current %>% funique()
+  fe_agg_rcp45   <- fe_keys_all$rcp45_2050 %>% funique()
+  fe_agg_rcp85   <- fe_keys_all$rcp85_2050 %>% funique()
+  
+  novel_rcp45 <- fe_agg_rcp45[!fe_agg_rcp45 %in% fe_agg_current]
+  novel_rcp85 <- fe_agg_rcp85[!fe_agg_rcp85 %in% fe_agg_current]
+  lost_rcp45  <- fe_agg_current[!fe_agg_current %in% fe_agg_rcp45]
+  lost_rcp85  <- fe_agg_current[!fe_agg_current %in% fe_agg_rcp85]
+  
+  same_rcp45 <- fe_agg_rcp45[fe_agg_rcp45 %in% fe_agg_current]
+  same_rcp85 <- fe_agg_rcp85[fe_agg_rcp85 %in% fe_agg_current]
+  
+  fe_novel_df <- fe_keys_all %>%
+    fmutate(novel_rcp45_2050 = rcp45_2050 %in% novel_rcp45,
+            novel_rcp85_2050 = rcp85_2050 %in% novel_rcp85,
+            lost_rcp45_2050  = current %in% lost_rcp45,
+            lost_rcp85_2050  = current %in% lost_rcp85) %>%
+    select(-current, -rcp45_2050, -rcp85_2050)
+  write_parquet(fe_novel_df, novel_fe_f)
+
 }
+
+fe_novel_r <- read_parquet(novel_fe_f) %>% rast()
+plot(fe_novel_r)
 ```
 
-```{r}
-library(Matrix)
+Unfortunately, from this analysis, we see that very few aggregations are remaining static from one time period to the next.  Novel aggregations are the norm, as are lost aggregations, with very few persisting from time period to time period (and many of those, aggregations with few functional entities represented).
 
-# 1. Compact entity IDs to 1..321 (skip if id_vec is already a dense 1..321 integer)
-entity_levels <- sort(unique(df$id_vec))
-entity_int <- as.integer(factor(df$id_vec, levels = entity_levels))
-n_entities <- length(entity_levels)   # 321
-
-# 2. Group rows by pixel (fast radix grouping, no string ops)
-g <- GRP(df, ~ x + y)
-ngroups <- g$N.groups
-
-# 3. Sparse pixel x entity indicator matrix
-#    (duplicate i,j pairs, e.g. repeated entity rows per pixel, are summed
-#     automatically -- irrelevant since we only care about nonzero)
-M <- sparseMatrix(i = g$group.id, j = entity_int, x = 1,
-                   dims = c(ngroups, n_entities))
-
-# 4. Pack entities into blocks of 31 bits each -> few integer columns
-block_size <- 31L
-nblocks    <- ceiling(n_entities / block_size)
-bit_pos    <- (seq_len(n_entities) - 1L) %% block_size
-block_idx  <- (seq_len(n_entities) - 1L) %/% block_size + 1L
-
-W <- sparseMatrix(i = seq_len(n_entities), j = block_idx,
-                   x = 2^bit_pos, dims = c(n_entities, nblocks))
-
-packed <- as.matrix(M %*% W)          # ngroups x nblocks, exact integers as doubles
-storage.mode(packed) <- "integer"     # compact; safe, values < 2^31
-
-# 5. Attach back to pixel coordinates
-result <- data.frame(g$groups, packed)
-```
+This kinda makes sense - in a highly complex ecosystem, a small addition of a new functional entity can result in an apparent (but probably not ecologically relevant) novelty (or the converse, since perhaps the old one is now apparently, but not ecologically relevant-ly, lost).
 
