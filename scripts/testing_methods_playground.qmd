@@ -468,3 +468,80 @@ identical(
 For reading in and filtering files, it looks like dplyr does pretty well, especially if we consider that data.table parallelization may not provide as much of a boost when included in mclapply...
 
 For processing large datasets quickly, collapse::qsu looks amazing, but will require some finesse to get it back into data frame formats (and drop the unnecessary values).
+
+## Prototype: batched multi-file duckdb reads (`get_sdm_multi()`)
+
+`get_sdm()` opens one duckdb connection (and, by default, one internal
+duckdb thread pool) *per species per slice*, via `mclapply`.  For a taxon
+like fish (thousands of species, narrow x-slices) this means an enormous
+number of connect/query/disconnect cycles.  `get_sdm_multi()` (added to
+`common_fxns.R`) instead passes a *list* of file paths to a single
+`read_parquet()` call, letting duckdb's own multithreaded scanner handle
+the parallel I/O and predicate pushdown, with `filename=true` used to
+recover `aphia_id` after the fact via regex on the file path.
+
+**This has NOT been run against real data yet** (data lives on the remote
+server, not available in this session) - the following chunks are meant to
+be run there to check correctness and tune `batch_size`/`threads` before
+swapping it in for `get_sdm()`.
+
+```{r}
+### Correctness check: results should match get_sdm() (mod row order)
+test_df <- spp_vuln_df %>%
+  filter(taxon == 'marine_mammals' & stressor == 'wildlife_strike')
+scenario <- c('current', 'rcp45_2050', 'rcp85_2050')
+xrange <- c(-180, -170)
+
+sdm_orig <- get_sdm(aphia_id = test_df$aphia_id, scenario = scenario, xrange = xrange) %>%
+  arrange(aphia_id, x, y)
+
+sdm_multi <- get_sdm_multi(aphia_id = test_df$aphia_id, scenario = scenario, xrange = xrange) %>%
+  arrange(aphia_id, x, y)
+
+identical(
+  sdm_orig %>% select(x, y, aphia_id, all_of(scenario)) %>% as.data.frame(),
+  sdm_multi %>% select(x, y, aphia_id, all_of(scenario)) %>% as.data.frame()
+)
+```
+
+```{r}
+### Timing comparison: current per-species mclapply approach vs batched
+### duckdb approach, across a range of batch sizes.  Use a taxon with
+### enough species to be representative (e.g. fish or a mid-size taxon)
+### rather than the tiny marine_mammals test set above.
+bench_ids <- test_df$aphia_id  ### swap in a larger taxon's aphia_ids on server
+
+system.time({
+  sdm_a <- get_sdm(aphia_id = bench_ids, scenario = scenario, xrange = xrange)
+})
+
+for(bs in c(100, 250, 500, 1000, 2000)) {
+  message('batch_size = ', bs)
+  print(system.time({
+    sdm_b <- get_sdm_multi(aphia_id = bench_ids, scenario = scenario,
+                           xrange = xrange, batch_size = bs)
+  }))
+}
+
+### Also worth checking: does capping duckdb threads (e.g. to match
+### available cores when this runs inside an outer parallel loop) change
+### things, vs letting duckdb use all detected cores?
+system.time({
+  sdm_c <- get_sdm_multi(aphia_id = bench_ids, scenario = scenario,
+                         xrange = xrange, batch_size = 500, threads = 4)
+})
+```
+
+### Open questions to resolve on the server
+
+* Does `filename` returned by duckdb give the full path passed in, or just
+  the basename?  The regex in `get_sdm_multi()` assumes it contains
+  `_SP_<id>.parquet` somewhere in the string - confirm this still matches.
+* Is `union_by_name = true` necessary (i.e. do per-species parquet files
+  ever have inconsistent column order/schema), or can it be dropped for a
+  small speedup?
+* What's the sweet spot for `batch_size`? Too small loses the benefit
+  (many small queries); too large makes the file-list SQL string huge and
+  may reduce duckdb's ability to prune/parallelize efficiently.
+* Does this approach still make sense once `divide_taxa()` splits fish
+  into smaller order-level groups (fewer files per taxon to batch over)?
