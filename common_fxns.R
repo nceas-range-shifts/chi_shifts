@@ -69,16 +69,40 @@ get_sdm <- function(aphia_id,
 
   process_batch <- function(files) {
     file_list_sql <- paste0("[", paste0("'", files, "'", collapse = ", "), "]")
-    select_cols   <- paste(scenario, collapse = ', ')
-    query_str <- paste0(
-      "SELECT x, y, cutoff, ", select_cols, ", ",
-      "CAST(regexp_extract(filename, '_SP_([0-9]+)\\.parquet$', 1) AS INTEGER) AS aphia_id ",
-      "FROM read_parquet(", file_list_sql, ", filename=true, union_by_name=true)"
-    )
+
+    if(apply_thresh) {
+      ### do the thresholding (and the "keep row if at least one scenario
+      ### cleared its cutoff" filter) inside duckdb instead of R - lets
+      ### duckdb's vectorized/columnar engine do this in place rather than
+      ### materializing the untransformed data frame in R first.
+      ### explicit IS NULL branch matters: SQL's CASE treats an unknown/NULL
+      ### condition (`NULL < cutoff`) as non-matching and falls through to
+      ### ELSE, silently turning missing raw values into 1. R's
+      ### ifelse(NA < cutoff, NA, 1) correctly propagates NA instead.
+      scen_exprs <- paste0(
+        "CASE WHEN ", scenario, " IS NULL THEN NULL ",
+        "WHEN ", scenario, " < cutoff THEN NULL ELSE 1 END AS ", tolower(scenario)
+      )
+      select_cols <- paste(scen_exprs, collapse = ', ')
+      keep_clause <- paste0("(", paste(scenario, ">= cutoff", collapse = ' OR '), ")")
+      query_str <- paste0(
+        "SELECT ROUND(x, 3) AS x, ROUND(y, 3) AS y, cutoff, ", select_cols, ", ",
+        "CAST(regexp_extract(filename, '_SP_([0-9]+)\\.parquet$', 1) AS INTEGER) AS aphia_id ",
+        "FROM read_parquet(", file_list_sql, ", filename=true, union_by_name=true) ",
+        "WHERE ", keep_clause
+      )
+    } else {
+      select_cols <- paste(scenario, collapse = ', ')
+      query_str <- paste0(
+        "SELECT x, y, cutoff, ", select_cols, ", ",
+        "CAST(regexp_extract(filename, '_SP_([0-9]+)\\.parquet$', 1) AS INTEGER) AS aphia_id ",
+        "FROM read_parquet(", file_list_sql, ", filename=true, union_by_name=true)"
+      )
+    }
     if(!is.null(xrange)) {
       query_str <- paste0(
         query_str,
-        " WHERE x <= ", max(xrange), " AND x >= ", min(xrange)
+        if(apply_thresh) " AND x <= " else " WHERE x <= ", max(xrange), " AND x >= ", min(xrange)
       )
     }
     DBI::dbGetQuery(con, query_str)
@@ -88,16 +112,6 @@ get_sdm <- function(aphia_id,
   df <- collapse::rowbind(df_list) %>%
     janitor::clean_names()
 
-  if(apply_thresh) {
-    scen <- tolower(scenario)
-    df <- df %>%
-      ### fmutate here ok b/c no masking required
-      fmutate(across(.cols = c(x, y), \(z) round(z, digits = 3))) %>%
-      ### fmutate NOT ok here b/c data masking required
-      mutate(across(.cols = all_of(scen), ~fifelse(.x < cutoff, NA, 1))) %>%
-      ### filter instead of fsubset here b/c data masking
-      filter(!if_all(all_of(scen), is.na))
-  }
   return(df)
 }
 
