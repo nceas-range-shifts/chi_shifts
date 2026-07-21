@@ -43,112 +43,36 @@ get_spp_vuln <- function() {
   return(df)
 }
 
-get_sdm <- function(aphia_id, 
-                    scenario = c('Current', 
-                                 'RCP26_2050', 'RCP26_2100',
-                                 'RCP45_2050', 'RCP45_2100', 
-                                 'RCP85_2050', 'RCP85_2100'),
-                    xrange = NULL, ### one or two numeric values
-                    apply_thresh = TRUE) {
-  ### SEE testing_methods_playground.qmd FOR OTHER VERSIONS
-  ### Here going with duckdb version - slightly faster than dplyr
-  ### version, plus memory benefit of not reading in then filtering
-  
-  ### define internal function:
-  process_one_sdm <- function(id, scenario, apply_thresh) {
-    filestem <- here_aquax('SDM/FINAL_EMSDM_EMMEAN_SP_%s.parquet')
-
-    ### open connection, select/filter
-    con <- duckdb::dbConnect(duckdb::duckdb())
-    DBI::dbExecute(con, "SET threads=1;")
-    
-    query_str <- paste0(
-      "SELECT x, y, cutoff, ", paste(scenario, collapse = ', '),
-      " FROM read_parquet('", sprintf(filestem, id), "')"
-    )
-    if(!is.null(xrange)) {
-      ### tack on WHERE clause
-      query_str <- paste0(
-        query_str,
-        " WHERE x <= ", max(xrange), " AND x >= ", min(xrange)
-        )
-    }
-    df <- DBI::dbGetQuery(con, query_str) %>%
-      janitor::clean_names() %>%
-      mutate(aphia_id = id)
-    
-    ### close connection!
-    duckdb::dbDisconnect(con, shutdown = TRUE)
-
-    if(apply_thresh) {
-      scen = tolower(scenario)
-      df <- df %>%
-        ### this is used in mclapply, so just use dplyr instead of collapse
-        mutate(across(.cols = c(x, y), ~round(.x, 3))) %>%
-        mutate(across(.cols = scen, ~ifelse(.x < cutoff, NA, 1))) %>%
-        filter(!if_all(.cols = scen, is.na))
-    }
-    return(df)
-  }
-  ### if single ID, process directly; otherwise, parallel:
-  if(length(aphia_id) == 1) {
-    sdm_df <- process_one_sdm(id = aphia_id, 
-                              scenario = scenario, 
-                              apply_thresh = apply_thresh)
-  } else {
-    ### set # cores based on # ids, up to some max
-    n_cores <- min(length(aphia_id), 60)
-    sdm_list <- parallel::mclapply(
-      mc.cores = n_cores,
-      X = aphia_id,
-      FUN = process_one_sdm,
-      scenario = scenario, apply_thresh = apply_thresh
-    )
-    sdm_df <- data.table::rbindlist(sdm_list)
-  }
-  return(sdm_df)
-}
-
-### Prototype: read many species' SDMs in a single duckdb query per batch,
-### instead of one dbConnect()/query per species (which is what get_sdm() 
-### does via mclapply).  Idea: let duckdb's own multithreaded parquet 
-### scanner do the parallel I/O + predicate pushdown across files, rather 
-### than forking one R process (and one duckdb connection/thread pool) per
-### species.  NOTE: untested against real data - data lives on remote 
-### server. Validate correctness (esp. the filename regex used to recover
-### aphia_id) and re-benchmark batch_size/threads before replacing get_sdm().
-get_sdm_multi <- function(aphia_id,
-                          scenario = c('Current',
-                                       'RCP26_2050', 'RCP26_2100',
-                                       'RCP45_2050', 'RCP45_2100',
-                                       'RCP85_2050', 'RCP85_2100'),
-                          xrange = NULL,       ### one or two numeric values
-                          apply_thresh = TRUE,
-                          batch_size = 500,    ### files per duckdb query - tune on server
-                          threads = NULL) {    ### NULL = duckdb default (all detected cores)
+get_sdm <- function(aphia_id,
+                    scenario = c('Current',
+                                  'RCP26_2050', 'RCP26_2100',
+                                  'RCP45_2050', 'RCP45_2100',
+                                  'RCP85_2050', 'RCP85_2100'),
+                    xrange = NULL,       ### one or two numeric values
+                    apply_thresh = TRUE,
+                    batch_size = 1000,   ### files per duckdb query - tune on server
+                    threads = 60,        ### cap duckdb worker threads - shared server!
+                    memory_limit = '300GB') { ### cap duckdb memory - shared server!
   filestem <- here_aquax('SDM/FINAL_EMSDM_EMMEAN_SP_%s.parquet')
   all_files <- sprintf(filestem, aphia_id)
 
-  ### chunk the file list so any single query string / file list stays a
-  ### reasonable size - tune batch_size based on taxon size and testing
   batches <- split(all_files, ceiling(seq_along(all_files) / batch_size))
 
   con <- duckdb::dbConnect(duckdb::duckdb())
   if(!is.null(threads)) {
     DBI::dbExecute(con, sprintf('SET threads=%d;', threads))
   }
+  if(!is.null(memory_limit)) {
+    DBI::dbExecute(con, sprintf("SET memory_limit='%s';", memory_limit))
+  }
   on.exit(duckdb::dbDisconnect(con, shutdown = TRUE), add = TRUE)
 
   process_batch <- function(files) {
-    ### duckdb read_parquet() accepts a list of file paths; filename=true
-    ### adds a 'filename' column so we can recover aphia_id post hoc
-    ### (avoids having to loop/union one file at a time in R).
     file_list_sql <- paste0("[", paste0("'", files, "'", collapse = ", "), "]")
     select_cols   <- paste(scenario, collapse = ', ')
     query_str <- paste0(
       "SELECT x, y, cutoff, ", select_cols, ", ",
-      ### filestem is '...SP_%s.parquet' -> capture the id before '.parquet'
-      "CAST(regexp_extract(filename, '_SP_([0-9]+)\\.parquet$', 1) AS BIGINT) AS aphia_id ",
+      "CAST(regexp_extract(filename, '_SP_([0-9]+)\\.parquet$', 1) AS INTEGER) AS aphia_id ",
       "FROM read_parquet(", file_list_sql, ", filename=true, union_by_name=true)"
     )
     if(!is.null(xrange)) {
@@ -161,15 +85,18 @@ get_sdm_multi <- function(aphia_id,
   }
 
   df_list <- lapply(batches, process_batch)
-  df <- data.table::rbindlist(df_list) %>%
+  df <- collapse::rowbind(df_list) %>%
     janitor::clean_names()
 
   if(apply_thresh) {
     scen <- tolower(scenario)
     df <- df %>%
-      mutate(across(.cols = c(x, y), ~round(.x, 3))) %>%
-      mutate(across(.cols = all_of(scen), ~ifelse(.x < cutoff, NA, 1))) %>%
-      filter(!if_all(.cols = all_of(scen), is.na))
+      ### fmutate here ok b/c no masking required
+      fmutate(across(.cols = c(x, y), \(z) round(z, digits = 3))) %>%
+      ### fmutate NOT ok here b/c data masking required
+      mutate(across(.cols = all_of(scen), ~fifelse(.x < cutoff, NA, 1))) %>%
+      ### filter instead of fsubset here b/c data masking
+      filter(!if_all(all_of(scen), is.na))
   }
   return(df)
 }
