@@ -358,7 +358,7 @@ if(!file.exists(out_f)) {
     theme_minimal() +
     theme(axis.text = element_blank(),
           axis.title = element_blank(),
-          panel.background = element_rect(fill = 'grey95'))
+          panel.background = element_rect(fill = 'white'))
 
   div_pal <- hcl.colors(n = 3, pal = 'Red-Green')
   spp_change <- ggplot(community_change_df, 
@@ -373,7 +373,7 @@ if(!file.exists(out_f)) {
     theme_minimal() +
     theme(axis.text = element_blank(),
           axis.title = element_blank(),
-          panel.background = element_rect(fill = 'grey95'))
+          panel.background = element_rect(fill = 'white'))
 
 
   p <- ggdraw() +
@@ -408,7 +408,7 @@ if(!file.exists(out_f)) {
     theme_minimal() +
     theme(axis.text = element_blank(),
           axis.title = element_blank(),
-          panel.background = element_rect(fill = 'grey95'))
+          panel.background = element_rect(fill = 'white'))
 
   ggsave(out_f, height = 8, width = 8, dpi = 300)
 }

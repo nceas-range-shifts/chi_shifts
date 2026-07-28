@@ -43,8 +43,8 @@ library(here)
 library(duckdb) 
 library(arrow)
 library(collapse)
-library(Matrix)
 library(terra)
+library(cowplot)
 
 source(here('common_fxns.R'))
 ```
@@ -385,7 +385,7 @@ all_fe_turnover %>%
 
 #### FE Richness 
 
-```{r spp community change}
+```{r FE community change}
 #| fig-height: 6
 #| fig-width: 6
 
@@ -408,11 +408,11 @@ if(!file.exists(out_f)) {
     coord_fixed() +
     scale_x_continuous(expand = c(0, 0)) +
     scale_y_continuous(expand = c(0, 0)) +
-    labs(fill = 'N spp\n(current)') +
+    labs(fill = 'N FE\n(current)') +
     theme_minimal() +
     theme(axis.text = element_blank(),
           axis.title = element_blank(),
-          panel.background = element_rect(fill = 'grey95'))
+          panel.background = element_rect(fill = 'white'))
 
   div_pal <- hcl.colors(n = 3, pal = 'Red-Green')
   fe_change <- ggplot(community_change_df, 
@@ -423,17 +423,16 @@ if(!file.exists(out_f)) {
     scale_x_continuous(expand = c(0, 0)) +
     scale_y_continuous(expand = c(0, 0)) +
     facet_wrap(~scenario, nrow = 1) +
-    labs(fill = 'ΔN spp (% change)') +
+    labs(fill = 'ΔN FE\n(% change)') +
     theme_minimal() +
     theme(axis.text = element_blank(),
           axis.title = element_blank(),
-          panel.background = element_rect(fill = 'grey95'),
-          legend.position = 'bottom')
+          panel.background = element_rect(fill = 'white'))
 
 
   p <- ggdraw() +
-    draw_plot(fe_r_now, x = 0, y = .33, width = 1, height = .67) +
-    draw_plot(fe_change, x = 0, y = 0, width = 1, height = .33)
+    draw_plot(fe_r_now, x = 0, y = .38, width = 1, height = .62) +
+    draw_plot(fe_change, x = 0, y = 0, width = 1, height = .38)
 
   ggsave(out_f, height = 6, width = 8, dpi = 300)
 }
@@ -463,7 +462,7 @@ if(!file.exists(out_f)) {
     theme_minimal() +
     theme(axis.text = element_blank(),
           axis.title = element_blank(),
-          panel.background = element_rect(fill = 'grey95'))
+          panel.background = element_rect(fill = 'white'))
 
   ggsave(out_f, height = 8, width = 8, dpi = 300)
 }
@@ -496,143 +495,4 @@ ggplot(sample_df, aes(x = ssi_rcp45_spp, y = ssi_rcp45_fe, color = log10(nspp_rc
   theme_minimal() +
   labs(x = 'SSI (spp, rcp4.5)', y = 'SSI (fe, rcp4.5)', color = 'N_spp (rcp4.5, 2050)')
 ```
-
-### Novel FEs
-
-Identify FE combinations in future scenarios with no current analog; similarly, identify FE combos in current with no future analogs.
-
-Read in all FE maps 
-
-* read in, flatten to just which pixels the FE is in and assign FE number column
-    * Turnover files are in extirpation/persistence/colonization stats
-    * current = persistence + extirpation
-    * future = persistence + colonization
-* join with all other FEs
-* Group by pixel and summarize the set of FEs to a unique identifier (string, hash, or vector of integers?)
-* Then group by FE strings, summarize how many pixels
-
-```{r}
-flatten_fe <- function(f) {
-  ### f <- fe_files_df$f[20]
-  fe_df <- read_parquet(f) %>%
-    pivot_wider(names_from = stat, values_from = c(rcp45_2050, rcp85_2050)) %>%
-    fmutate(exists_current = (rcp45_2050_extirpation | rcp45_2050_persistence),
-        exists_rcp45_2050 = (rcp45_2050_persistence | rcp45_2050_colonization),
-        exists_rcp85_2050 = (rcp85_2050_persistence | rcp85_2050_colonization)) %>%
-    select(x, y, starts_with('exists'))
-  
-  return(fe_df)
-}
-
-entities_to_keys <- function(df, n_entities) {
-  ### df is x, y, and ID per cell, for a given scenario
-
-  ### Group rows by pixel (fast radix grouping, no string ops)
-  g <- GRP(df, ~ x + y)
-  ngroups <- g$N.groups
-  
-  ### Sparse pixel x entity indicator matrix
-  #    (duplicate i,j pairs, e.g. repeated entity rows per pixel, are summed
-  #     automatically -- irrelevant since we only care about nonzero)
-  M <- sparseMatrix(i = g$group.id, j = df$fe_id, x = 1,
-                    dims = c(ngroups, n_entities))
-
-  ### Pack entities into blocks of 31 bits each -> few integer columns
-  block_size <- 31L
-  nblocks    <- ceiling(n_entities / block_size)
-  bit_pos    <- (seq_len(n_entities) - 1L) %% block_size
-  block_idx  <- (seq_len(n_entities) - 1L) %/% block_size + 1L
-  
-  W <- sparseMatrix(i = seq_len(n_entities), j = block_idx,
-                     x = 2^bit_pos, dims = c(n_entities, nblocks))
-  
-  packed <- as.matrix(M %*% W)          # ngroups x nblocks, exact integers as doubles
-  storage.mode(packed) <- "integer"     # compact; safe, values < 2^31
-
-  ### combine vectorized across columns, no per-row loop
-  key <- do.call(stringi::stri_c, c(as.data.frame(packed), sep = "_"))
-  
-  ### Attach back to pixel coordinates
-  result <- data.frame(g$groups, bitset_key = key)
-}
-
-```
-
-```{r}
-novel_fe_f <- here('_output/fe_turnover_maps/fe_novelty_maps.parquet')
-if(!file.exists(novel_fe_f)) {
-  
-  fe_keys_f <- here('_output/fe_turnover_maps/fe_entity_keys.parquet')
-  if(!file.exists(fe_keys_f)) {
-  
-    fe_turnover_fstem <- here('_output/fe_turnover_maps/turnover_by_fe/fe_turnover_%s.parquet')
-  
-    fe_files_df <- spp_fe_df %>%
-      select(fe, n) %>%
-      distinct() %>%
-      mutate(id = 1:n(),
-             f  = sprintf(fe_turnover_fstem, fe))
-    
-    collapse::set_collapse(nthreads = 1)
-    fe_maps <- parallel::mclapply(
-      mc.cores = 64,
-        X = fe_files_df$f, 
-        FUN = flatten_fe) %>%
-      setNames(fe_files_df$id) %>%
-      rowbind(idcol = 'fe_id')
-      
-    fe_map_current <- fe_maps %>%
-      fsubset(exists_current) %>%
-      select(x, y, fe_id)
-    fe_keys_current <- entities_to_keys(fe_map_current, n_entities = length(fe_files_df$id)) %>%
-      rename(current = bitset_key)
-    fe_map_rcp45 <- fe_maps %>%
-      fsubset(exists_rcp45_2050) %>%
-      select(x, y, fe_id)
-    fe_keys_rcp45 <- entities_to_keys(fe_map_rcp45, n_entities = length(fe_files_df$id)) %>%
-      rename(rcp45_2050 = bitset_key)
-    fe_map_rcp85 <- fe_maps %>%
-      fsubset(exists_rcp85_2050) %>%
-      select(x, y, fe_id)
-    fe_keys_rcp85 <- entities_to_keys(fe_map_rcp85, n_entities = length(fe_files_df$id)) %>%
-      rename(rcp85_2050 = bitset_key)
-    
-    fe_keys_all <- fe_keys_current %>%
-      collapse::join(fe_keys_rcp45, how = 'full', on = c('x', 'y')) %>%
-      collapse::join(fe_keys_rcp85, how = 'full', on = c('x', 'y'))
-    
-    write_parquet(fe_keys_all, fe_keys_f)
-  }
-  
-  fe_keys_all <- read_parquet(fe_keys_f)
-  
-  fe_agg_current <- fe_keys_all$current %>% funique()
-  fe_agg_rcp45   <- fe_keys_all$rcp45_2050 %>% funique()
-  fe_agg_rcp85   <- fe_keys_all$rcp85_2050 %>% funique()
-  
-  novel_rcp45 <- fe_agg_rcp45[!fe_agg_rcp45 %in% fe_agg_current]
-  novel_rcp85 <- fe_agg_rcp85[!fe_agg_rcp85 %in% fe_agg_current]
-  lost_rcp45  <- fe_agg_current[!fe_agg_current %in% fe_agg_rcp45]
-  lost_rcp85  <- fe_agg_current[!fe_agg_current %in% fe_agg_rcp85]
-  
-  same_rcp45 <- fe_agg_rcp45[fe_agg_rcp45 %in% fe_agg_current]
-  same_rcp85 <- fe_agg_rcp85[fe_agg_rcp85 %in% fe_agg_current]
-  
-  fe_novel_df <- fe_keys_all %>%
-    fmutate(novel_rcp45_2050 = rcp45_2050 %in% novel_rcp45,
-            novel_rcp85_2050 = rcp85_2050 %in% novel_rcp85,
-            lost_rcp45_2050  = current %in% lost_rcp45,
-            lost_rcp85_2050  = current %in% lost_rcp85) %>%
-    select(-current, -rcp45_2050, -rcp85_2050)
-  write_parquet(fe_novel_df, novel_fe_f)
-
-}
-
-fe_novel_r <- read_parquet(novel_fe_f) %>% rast()
-plot(fe_novel_r)
-```
-
-Unfortunately, from this analysis, we see that very few aggregations are remaining static from one time period to the next.  Novel aggregations are the norm, as are lost aggregations, with very few persisting from time period to time period (and many of those, aggregations with few functional entities represented).
-
-This kinda makes sense - in a highly complex ecosystem, a small addition of a new functional entity can result in an apparent (but probably not ecologically relevant) novelty (or the converse, since perhaps the old one is now apparently, but not ecologically relevant-ly, lost).
 
