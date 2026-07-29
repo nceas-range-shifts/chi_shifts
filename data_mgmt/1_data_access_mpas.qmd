@@ -1,0 +1,100 @@
+---
+title: Download MPA dataset
+author: "Casey O'Hara"
+format:
+  html:
+    embed-resources: true
+---
+
+## Summary
+
+Download stressor and habitat data from:
+
+* UNEP-WCMC and IUCN (2026), Protected Planet: The World Database on Protected Areas (WDPA) and World Database on Other Effective Area-based Conservation Measures (WD-OECM) [Online], July 2026, Cambridge, UK: UNEP-WCMC and IUCN. Available at: www.protectedplanet.net.
+* https://www.protectedplanet.net/en/search-areas?filters%5Bis_type%5D%5B%5D=marine
+* download link for WDPA and WDOECM (July 2026): https://d1gam3xoknrgr2.cloudfront.net/current/WDPA_WDOECM_Jul2026_Public_1b091e2b51c258eb3b24328044a4a3d6979e00fa2029d7538aef2befd46da362_shp.zip
+
+
+
+## Methods
+
+```{r}
+library(tidyverse)
+library(here)
+library(sf)
+library(terra)
+```
+
+Download WDPA database, filter to MPAs and marine OECMs.
+Rasterize to AquaX resolution.
+
+Make sure to manually add these to .gitignore!
+
+### Download protected area maps
+
+```{r}
+mpa_data_dir <- here('_data_raw/unep_wcmc_2026/')
+
+if(!dir.exists(mpa_data_dir)) {
+  mpa_maps_url <- 'https://d1gam3xoknrgr2.cloudfront.net/current/WDPA_WDOECM_Jul2026_Public_1b091e2b51c258eb3b24328044a4a3d6979e00fa2029d7538aef2befd46da362_shp.zip'
+  destfile <- here::here('wdpa.zip')
+  download.file(mpa_maps_url, destfile, mode = 'wb')
+  
+  unzip(destfile, exdir = mpa_data_dir)
+  file.remove(destfile)
+}
+```
+
+### Load in WDPA maps
+
+Load and inspect WDPA maps for completeness.  Unzipped folder contains new zips of several different shapefiles that combined represent the entirety of the polygons (and points?)
+
+```{r}
+gpkg_out <- file.path(mpa_data_dir, 'wdpa_wdoecm_july2026.gpkg')
+
+if(!file.exists(gpkg_out)) {
+  zips <- list.files(mpa_data_dir, pattern = '.zip', full.names = TRUE)
+  shp_dir <- file.path(mpa_data_dir, 'WDPA_shp')
+  for(z in zips) {
+    ### z <- zips[1]
+    unzip(z, exdir = file.path(shp_dir, gsub('.zip', '', basename(z))))
+    unlink(zips)
+  }
+
+  shp_fs <- list.files(shp_dir, pattern = '.shp$', 
+                      recursive = TRUE, full.names = TRUE)
+
+  wdpa_sf <- parallel::mclapply(shp_fs, 
+                                mc.cores = length(shp_fs), 
+                                FUN = read_sf) %>%
+    bind_rows() %>%
+    janitor::clean_names()
+  write_sf(wdpa_sf, gpkg_out)
+  unlink(shp_dir, recursive = TRUE)
+}
+```
+
+### Rasterize WDPA by IUCN protected area class
+
+Convert Ia/Ib to 1, other to integer, Not Assigned/Applicable/Reported to 7.
+
+```{r}
+wdpa_r_out <- here('_data/unep_wcmc_2026/wdpa_wdoecm_july2026.tif')
+if(!file.exists(wdpa_r_out)) {
+  wdpa_sf <- read_sf(gpkg_out) %>%
+    mutate(x = gsub('a|b', '', iucn_cat),
+          x = gsub('Not.+', 'VII', x),
+          iucn_cat_num = as.integer(as.roman(x))) 
+
+  wdpa_poly_sf <- wdpa_sf %>%
+    filter(str_detect(st_geometry_type(.), 'POLYGON'))
+
+  base_r <- rast(ext(c(-180, 180, -90, 90)), res = 0.05, crs = 'epsg:4326')
+
+  wdpa_r <- rasterize(x = wdpa_poly_sf |> vect(), ### coerce to SpatVector 
+                      y = base_r, 
+                      field = 'iucn_cat_num', fun = 'min')
+
+  writeRaster(wdpa_r, wdpa_r_out)
+}
+```
