@@ -74,3 +74,12 @@ if(!file.exists(gpkg_out)) {
 }
 ```
 
+### Download EEZ data
+
+Download EEZ polygons from Marine Regions:
+
+* Flanders Marine Institute (2023). Maritime Boundaries Geodatabase: Maritime Boundaries and Exclusive Economic Zones (200NM), version 12. Available online at https://www.marineregions.org/. https://doi.org/10.14284/632
+
+```{r}
+eez_sf <- st_read('/home/shares/usgs-cap-rangeshifts/spatial/World_EEZ_v12_20231025_gpkg/eez_v12.gpkg')
+```
