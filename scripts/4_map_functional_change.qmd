@@ -1,0 +1,498 @@
+---
+title: Map functional change
+author: "Casey O'Hara"
+format:
+  html:
+    embed-resources: true
+execute:
+    warning: false
+---
+
+## Summary
+
+For each pixel, identify for each scenario the changes in functional entity composition relative to the current composition.
+
+* Count: persistence (current & scenario), colonization (!current & scenario), extirpation (current & !scenario)
+* Turnover: SSI $QS = \frac{2a}{2a + b + c}$ where:
+    * $a$ is FEs shared by both sites (scenarios) - persistence
+    * $b$ is FEs unique to first site (current) - extirpation
+    * $c$ is FEs unique to second site (scenario) - colonization
+* Novelty: which, if any, FE combos exist in future scenarios that don't currently exist?
+
+## Data
+
+* AquaX species distribution models from Reygondeau et al. (2026). AquaX: An enhanced and revised AquaMaps framework to model marine species distributions and biodiversity. PLOS ONE, 21(2), e0335823. https://doi.org/10.1371/journal.pone.0335823
+* Function entities from O'Hara et al. (2024). Cumulative human impacts on global marine fauna highlight risk to biological and functional diversity. PLOS ONE, 19(9), e0309788. https://doi.org/10.1371/journal.pone.0309788
+
+
+## Methods
+
+* Read in SDMs (by slice) for all species in functional entity as long data frame
+* For each scenario, by row (spp and pixel) classify from presence/absence to persistence/colonization/extirpation
+* Group by pixel and classification, and summarize
+* Group by pixel and summarize SSI
+* Save out as raster or parquet.
+
+Once complete for each taxon, then combine and calculate across all taxa.
+
+```{r attach packages}
+#| message: false
+#| 
+library(tidyverse)
+library(here)
+library(duckdb) 
+library(arrow)
+library(collapse)
+library(terra)
+library(cowplot)
+
+source(here('common_fxns.R'))
+```
+
+### Gather species, traits
+
+```{r gather data}
+available_spp <- list.files(here_aquax('SDM')) %>% 
+  str_extract('[0-9]+') %>% 
+  as.numeric()
+aquax_meta <- get_aquax_meta() %>%
+  filter(aphia_id %in% available_spp)
+
+spp_fe_df <- read_csv(here('_data_raw/ohara_2024/funct_entity_traits/fe_spp_traits.csv')) %>%
+  rename(len = length_cm, wcol = wcol_pos) %>%
+  mutate(len = case_when(len <= 1.5 ~ 'tiny',
+                         len <= 7   ~ 'vsm',
+                         len <= 15  ~ 'sm',
+                         len <= 30  ~ 'med',
+                         len <= 50  ~ 'ml',
+                         len <= 80  ~ 'lg',
+                         len <= 150 ~ 'vlg',
+                         len >  150 ~ 'huge',
+                         TRUE ~ NA_character_),
+         len = factor(len, levels = c('tiny', 'vsm', 'sm', 'med', 'ml', 'lg', 'vlg', 'huge'))) %>%
+  mutate(trp = case_when(troph <= 2 ~ 'pri',
+                         troph <= 3 ~ 'sec',
+                         troph <= 4 ~ 'ter',
+                         troph >  4 ~ 'apex',
+                         TRUE ~ NA_character_)) %>%
+  mutate(mob = case_when(str_detect(adult_mob, 'migratory') ~ 'migr',
+                         str_detect(adult_mob, 'resident') ~ 'res',
+                         str_detect(adult_mob, 'sedentary') ~ 'sed',
+                         str_detect(adult_mob, 'sessile') ~ 'ses',
+                         TRUE ~ NA_character_),
+         mob = factor(mob, levels = c('migr', 'res', 'sed', 'ses'))) %>%
+  select(sciname, aphia_id,
+         wcol, mob, len, 
+         # fec, gen, 
+         trp) %>%
+  drop_na() %>%
+  distinct() %>%
+  filter(aphia_id %in% aquax_meta$aphia_id) %>%
+  mutate(fe = paste(len, trp, mob, wcol, sep = '_')) %>%
+  group_by(fe) %>%
+  mutate(n = n()) %>%
+  ungroup() %>%
+  arrange(desc(n), fe)
+
+table(spp_fe_df$len)
+table(spp_fe_df$trp)
+table(spp_fe_df$mob)
+table(spp_fe_df$wcol)
+
+```
+
+
+### Iterate over functional entities
+
+For each FE, create a composition map.  "Map" is a parquet file containing columns:
+
+* x, y (numeric): x/y in degrees for a pixel
+* stat: the statistic described in this observation: n, persistence, colonization, extirpation, SSI
+* rcp45_2050: projected value of this stat for this pixel for this scenario
+* rcp85_2050: projected value of this stat for this pixel for this scenario
+
+```{r}
+### set the number of vertical slices by degrees
+x_px     <- 360 / 0.05       ### number of pixels in x axis
+xslice_w <- 5                ### slice width in degrees
+xslice_n <- 360 / xslice_w   ### number of vertical slices
+if(x_px %% xslice_n != 0) stop('Choose a slice width that divides evenly into 360!')
+
+```
+
+
+```{r iterate over FEs}
+fe_vec <- spp_fe_df$fe %>% unique()
+
+scenario <- c('current', 'rcp45_2050', 'rcp85_2050')
+
+for(f_e in fe_vec) {
+  ### f_e <- fe_vec[1]
+
+  out_fstem <- here::here('_output/fe_turnover_maps/turnover_by_fe/fe_turnover_%s.parquet') 
+   
+  out_f <- sprintf(out_fstem, f_e)
+  if(file.exists(out_f)) next()
+
+  message(paste0('Creating ', basename(out_f), '\n'))
+
+  fe_df <- spp_fe_df %>%
+      filter(fe == f_e)
+  
+  #########################################
+  ### iterate slices for taxon/stressor ###
+  #########################################
+
+  tmp_out_fstem <- here::here('tmp/fe_turnover/fe_turnover_%s_%s.parquet')
+  if(!dir.exists(dirname(tmp_out_fstem))) dir.create(dirname(tmp_out_fstem))
+  
+  ### set the number of vertical slices by degrees
+  x_px     <- 360 / 0.05                  ### number of pixels in x axis
+  xslice_n <- 360 / xslice_w              ### number of vertical slices
+  if(x_px %% xslice_n != 0) stop('Choose a slice width that divides evenly into 360!')
+
+  slice_vec <- 1:xslice_n
+
+  for(i in slice_vec) {
+    ### i <- 1
+    ### generate xrange for this iteration.  NOTE: this works
+    ### because actual x values fall on pixel centers, not edges
+    xrange <- -180 + c((i-1), i) * xslice_w
+    
+    tmp_out_f <- sprintf(tmp_out_fstem, f_e, paste0(xrange, collapse = '_'))
+    if(file.exists(tmp_out_f)) next()
+    
+    ########################################
+    ###  get sdms for this slice and FE  ###
+    ########################################
+    sdm_df <- get_sdm(aphia_id = fe_df$aphia_id %>% unique(), 
+                      scenario = scenario,
+                      xrange = xrange,
+                      apply_thresh = TRUE)
+    if(nrow(sdm_df) == 0) {
+      ### no spp here, save placeholder and move on!
+      write_parquet(data.frame(), tmp_out_f)
+      next()
+    }
+
+    ### FOR EACH SCENARIO:
+    future_scens <- scenario[scenario != 'current']
+
+    ### Reclassify each spp/pixel as persistent, extirpated, or colonized
+    sdm_reclass <- sdm_df %>%
+      ### present = 1, absent = 0
+      fmutate(across(all_of(scenario), \(z) !is.na(z))) %>%
+      ### extirp = 1 + 0 = 1; coloniz = 0 + 2 = 2; persist = 1 + 2 = 3
+      fmutate(across(all_of(future_scens), \(z) .$current + z*2))
+    
+    ### Summarize across species for each pixel
+    reclass_vec <- c('extirpation', 'colonization', 'persistence')
+    sdm_summary <- parallel::mclapply(mc.cores = length(reclass_vec),
+        X = seq_along(reclass_vec),
+        FUN = function(i) {
+          sdm_reclass %>%
+            fgroup_by(x, y) %>%
+            fsummarize(across(all_of(future_scens), \(z) sum(z == i)))
+        }) %>% 
+      setNames(reclass_vec) %>%
+      collapse::rowbind(idcol = 'stat') %>%
+      fmutate(stat = as.character(stat))
+    
+    ### Calculate SSI from persistence/extirp/colonization
+    sdm_ssi_df <- parallel::mclapply(mc.cores = length(future_scens),
+        X = future_scens,
+        FUN = function(sc) {
+          ### sc <- future_scens[1]
+          ssi_df <- sdm_summary %>%
+            select(x, y, stat, scenario = all_of(sc)) %>%
+            pivot_wider(names_from = 'stat', values_from = 'scenario') %>%
+            fmutate(ssi = 2 * persistence / (2 * persistence + extirpation + colonization)) %>%
+            select(x, y, !!sc := ssi)
+        }) %>%
+      purrr::reduce(.f = full_join, by = c('x', 'y')) %>%
+      fmutate(stat = 'ssi')
+      
+    ### write out to tmp file
+    arrow::write_parquet(rowbind(sdm_summary, sdm_ssi_df), tmp_out_f)
+    
+  } ### END ITERATION OVER SLICES
+
+  #############################################
+  ### assemble slices for FE level turnover ###
+  #############################################
+
+  tmp_fs <- list.files(dirname(tmp_out_fstem), pattern = f_e, full.names = TRUE)
+  
+  complete_fe_turnover_df <- parallel::mclapply(
+    X = tmp_fs,
+    FUN = arrow::read_parquet,
+    mc.cores = 36
+  ) %>%
+    bind_rows()
+
+  arrow::write_parquet(complete_fe_turnover_df, out_f)
+  
+  unlink(tmp_fs)  ### clean up temp directory
+
+} ### END LOOP OVER FEs
+```
+
+### Combine FE maps
+
+```{r}
+
+all_fe_turnover_f <- here('_output/fe_turnover_maps/all_fe_turnover.parquet')
+
+if(!file.exists(all_fe_turnover_f)) {
+  fe_map_fs <- list.files(here('_output/fe_turnover_maps/turnover_by_fe'), 
+                        pattern = 'fe_turnover.+.parquet', full.names = TRUE)
+  
+  fe_vec <- basename(fe_map_fs) %>% str_remove_all('fe_turnover_|.parquet')
+  
+  fe_maps <- parallel::mclapply(mc.cores = min(length(fe_map_fs), 64),
+                                X = fe_map_fs, 
+                                FUN = \(z) {
+                                  read_parquet(z) %>%
+                                    pivot_wider(names_from = stat, values_from = c(rcp45_2050, rcp85_2050))
+                                  }) %>%
+    setNames(fe_vec) %>%
+    rowbind(idcol = 'fe')
+  
+  ### summarize total spp for FEs: 
+  ### * current presence = persistence (already here) + extirpation (disappear in future)
+  ### * future presence = persistence (still here) + colonization (new entrants)
+  fe_nspp_map_f <- here('_output/fe_turnover_maps/fe_nspp_maps.parquet')
+  if(!file.exists(fe_nspp_map_f)) {
+    nspp_maps <- fe_maps %>%
+      fgroup_by(x, y) %>%
+      fsummarize(nspp_current = sum(rcp45_2050_extirpation + rcp45_2050_persistence),
+                 nspp_rcp45_2050 = sum(rcp45_2050_persistence + rcp45_2050_colonization),
+                 nspp_rcp85_2050 = sum(rcp85_2050_persistence + rcp85_2050_colonization))
+    write_parquet(nspp_maps, fe_nspp_map_f)
+  }
+  
+  ### summarize turnover for FEs.  First collapse FE presence to persistence,
+  ### colonization, or extirpation.  Each FE is already summarized per
+  ### cell, so:
+  ### * FE persists if ANY spp in present and ANY spp in future:
+  ###     * sum(extirpation + persistence) > 0
+  ###     * AND (persistence OR colonization) > 0
+  ### * FE colonizes if NO spp in present and ANY spp in future
+  ###     * (extirpation AND persistence) == 0
+  ###     * AND colonization > 0
+  ### * FE is extirpated if ANY spp in present and NO spp in future
+  ###     * extirpation > 0
+  ###     * AND (persistence AND colonization) == 0
+  fe_exists <- fe_maps %>%
+    fmutate(exists_current    = (rcp45_2050_extirpation | rcp45_2050_persistence),
+            exists_rcp45_2050 = (rcp45_2050_persistence | rcp45_2050_colonization),
+            exists_rcp85_2050 = (rcp85_2050_persistence | rcp85_2050_colonization)) %>%
+    select(x, y, fe, starts_with('exists'))
+  fe_status <- fe_exists %>%
+    fmutate(rcp45_2050_extirpation = exists_current & !exists_rcp45_2050,
+            rcp45_2050_colonization = !exists_current & exists_rcp45_2050,
+            rcp45_2050_persistence = exists_current & exists_rcp45_2050,
+            rcp85_2050_extirpation = exists_current & !exists_rcp85_2050,
+            rcp85_2050_colonization = !exists_current & exists_rcp85_2050,
+            rcp85_2050_persistence = exists_current & exists_rcp85_2050)
+
+  ### Then sum up the three stats across the scenarios acrpss all FEs
+  fe_turnover <- fe_status %>%
+    select(-starts_with('exists')) %>%
+    fgroup_by(x, y) %>%
+    fsummarize(across(-fe, .fns = \(x) sum(as.numeric(x))))
+  
+  ### Then calc SSI for each scenario
+  fe_ssi_df <- fe_turnover %>%
+    fmutate(rcp45_2050 = 2 * rcp45_2050_persistence / 
+              (2 * rcp45_2050_persistence + rcp45_2050_extirpation + rcp45_2050_colonization),
+            rcp85_2050 = 2 * rcp85_2050_persistence / 
+              (2 * rcp85_2050_persistence + rcp85_2050_extirpation + rcp85_2050_colonization)) %>%
+    select(x, y, rcp45_2050, rcp85_2050) %>%
+    fmutate(stat = 'ssi')
+  
+  all_fe_turnover <- fe_turnover %>%
+    select(-contains('ssi')) %>%
+    setNames(str_replace(names(.), '2050_', '2050X')) %>%
+    pivot_longer(cols = -c(x, y), names_to = c('.value', 'stat'), names_sep = 'X') %>%
+    rowbind(fe_ssi_df)
+
+  write_parquet(all_fe_turnover, all_fe_turnover_f)
+  
+  fe_nfe_map_f <- here('_output/fe_turnover_maps/fe_nfe_maps.parquet')
+  if(!file.exists(fe_nfe_map_f)) {
+    nfe_maps <- fe_exists %>%
+      fgroup_by(x, y) %>%
+      fsummarize(nfe_current = sum(exists_current),
+                 nfe_rcp45_2050 = sum(exists_rcp45_2050),
+                 nfe_rcp85_2050 = sum(exists_rcp85_2050))
+    write_parquet(nfe_maps, fe_nfe_map_f)
+  }
+
+
+}
+```
+
+### Maps
+
+:::panel-tabset
+#### Persistence 
+
+Number of spp in both current period and future
+
+```{r persistence map}
+#| fig-height: 3
+
+all_fe_turnover <- read_parquet(all_fe_turnover_f)
+
+
+all_fe_turnover %>%
+  fsubset(stat == 'persistence') %>%
+  select(-stat) %>%
+  rast() %>%
+  plot()
+```
+
+#### Colonization 
+
+Number of spp in future period but NOT in current
+
+```{r colonization map}
+#| fig-height: 3
+
+all_fe_turnover %>%
+  fsubset(stat == 'colonization') %>%
+  select(-stat) %>%
+  rast() %>%
+  plot()
+```
+
+#### Extirpation 
+
+Number of spp in current period but NOT future
+
+```{r extirpation map}
+#| fig-height: 3
+
+all_fe_turnover %>%
+  fsubset(stat == 'extirpation') %>%
+  select(-stat) %>%
+  rast() %>%
+  plot()
+```
+
+:::
+
+#### FE Richness 
+
+```{r FE community change}
+#| fig-height: 6
+#| fig-width: 6
+
+community_change_df <- all_fe_turnover %>%
+  pivot_longer(cols = c('rcp45_2050', 'rcp85_2050'), names_to = 'scenario', values_to = 'value') %>%
+  pivot_wider(names_from = stat, values_from = value) %>%
+  mutate(fe_r_current = persistence + extirpation,
+         fe_r_change  = colonization - extirpation) %>%
+  select(x, y, scenario, fe_r_current, fe_r_change, ssi) %>%
+  mutate(turnover = 1 - ssi)
+
+out_f <- here('ms_figs', 'x_fe_richness.png')
+
+if(!file.exists(out_f)) {
+  fe_r_now <- ggplot(community_change_df %>% 
+                        filter(scenario == 'rcp45_2050'), 
+                      aes(x, y, fill = fe_r_current)) +
+    geom_raster() +
+    scale_fill_viridis_c() +
+    coord_fixed() +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0)) +
+    labs(fill = 'N FE\n(current)') +
+    theme_minimal() +
+    theme(axis.text = element_blank(),
+          axis.title = element_blank(),
+          panel.background = element_rect(fill = 'white'))
+
+  div_pal <- hcl.colors(n = 3, pal = 'Red-Green')
+  fe_change <- ggplot(community_change_df, 
+                            aes(x, y, fill = log10((fe_r_current + fe_r_change)/fe_r_current))) +
+    geom_raster() +
+    scale_fill_gradient2(low = div_pal[1], mid = div_pal[2], high = div_pal[3], midpoint = 0) +
+    coord_fixed() +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0)) +
+    facet_wrap(~scenario, nrow = 1) +
+    labs(fill = 'ΔN FE\n(% change)') +
+    theme_minimal() +
+    theme(axis.text = element_blank(),
+          axis.title = element_blank(),
+          panel.background = element_rect(fill = 'white'))
+
+
+  p <- ggdraw() +
+    draw_plot(fe_r_now, x = 0, y = .38, width = 1, height = .62) +
+    draw_plot(fe_change, x = 0, y = 0, width = 1, height = .38)
+
+  ggsave(out_f, height = 6, width = 8, dpi = 300)
+}
+  
+knitr::include_graphics(out_f)
+```
+
+
+#### Turnover 
+
+Sorensen similarity index: 1 = identical community, 0 = complete turnover - flip this so 1 = complete turnover, 0 = no turnover
+
+```{r turnover}
+#| fig-height: 6
+#| fig-width: 6
+out_f <- here('ms_figs', 'x_fe_turnover.png')
+
+if(!file.exists(out_f)) {
+  p <- ggplot(community_change_df, aes(x, y, fill = turnover)) +
+    geom_raster() +
+    scale_fill_viridis_c() +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0)) +
+    coord_fixed() +
+    facet_wrap(~ scenario, ncol = 1, strip.position = 'left') +
+    labs(fill = 'Turnover\n(1-ssi)') +
+    theme_minimal() +
+    theme(axis.text = element_blank(),
+          axis.title = element_blank(),
+          panel.background = element_rect(fill = 'white'))
+
+  ggsave(out_f, height = 8, width = 8, dpi = 300)
+}
+knitr::include_graphics(out_f)
+```
+
+
+### FE SSI vs spp SSI
+
+```{r}
+spp_ssi <- read_parquet(here('_output/spp_turnover_maps/all_spp_turnover.parquet')) %>%
+  filter(stat == 'ssi') %>%
+  select(x, y, ssi_rcp45_spp = rcp45_2050)
+fe_ssi <- all_fe_turnover %>%
+  fsubset(stat == 'ssi') %>%
+  select(x, y, ssi_rcp45_fe = rcp45_2050)
+fe_nspp <- read_parquet(here('_output/fe_turnover_maps/fe_nspp_maps.parquet'))
+
+set.seed(12345)
+sample_df <- spp_ssi %>%
+  slice_sample(n = 1e5) %>%
+  join(fe_ssi, how = 'left') %>%
+  join(fe_nspp, how = 'left') %>%
+  arrange(nspp_rcp45_2050)
+
+ggplot(sample_df, aes(x = ssi_rcp45_spp, y = ssi_rcp45_fe, color = log10(nspp_rcp45_2050))) +
+  geom_point(alpha = .2) +
+  geom_abline(slope = 1, intercept = 0, color = 'red') +
+  scale_color_viridis_c(breaks = 0:4, labels = c('1', '10', '100', '1000', '10000')) +
+  theme_minimal() +
+  labs(x = 'SSI (spp, rcp4.5)', y = 'SSI (fe, rcp4.5)', color = 'N_spp (rcp4.5, 2050)')
+```
+

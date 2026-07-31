@@ -1,0 +1,140 @@
+---
+title: Map impact stats by stressor across all species
+author: "Casey O'Hara"
+format:
+  html:
+    embed-resources: true
+execute:
+    warning: false
+---
+
+## Summary
+
+For each stressor, combine all species-wide stressor vulnerability maps with stressor distribution maps.
+
+## Data
+
+* vulnerability maps generated in 2_map_vulnerability_stressor_all_spp.qmd
+* stressor maps generated in XXXX
+
+## Methods
+
+* Read in SDMs for multiple species as long data frame
+* Group by pixel and summarize stats.
+* Save out as raster or parquet.
+
+```{r attach packages}
+#| message: false
+#| 
+library(tidyverse)
+library(arrow)
+library(collapse)
+library(here)
+library(terra)
+
+source(here('common_fxns.R'))
+```
+
+### Gather species richness maps
+
+```{r gather spp_richness}
+nspp_df <- read_parquet(here('_output/vuln_maps/spp_richness_all_spp.parquet'))
+nspp_r  <- rast(nspp_df)
+
+plot(nspp_r)
+
+### pull scenarios from data
+scenarios <- names(nspp_df)[!names(nspp_df) %in% c('x', 'y', 'tx', 'f')]
+```
+
+### Iterate over stressors and scenarios
+
+For each stressor, iterate over scenarios to generate a single mapset of pooled mean, sd, skew, and kurtosis.
+
+```{r find stressor vuln maps}
+vuln_mapfs <- list.files(here('_output/vuln_maps'), pattern = '^all_spp_vuln_.+parquet$', full.names = TRUE)
+str_vulns  <- basename(vuln_mapfs) %>% str_remove_all('all_spp_vuln_|.parquet')
+
+str_mapfs  <- list.files(here('_data_raw/halpern_2025/pressures_rescaled'), pattern = '.tif', full.names = TRUE)
+str_dists  <- basename(str_mapfs) %>% str_remove_all('_ssp[0-9].+') %>% unique()
+```
+
+
+```{r}
+calc_impacts <- function(vuln_f, str_f, 
+                         scenarios = c('current', 'rcp45_2050', 'rcp85_2050'), 
+                         out_f, overwrite = FALSE) {
+  
+  if(file.exists(out_f) & !overwrite) {
+    return(read_parquet(out_f))
+  }
+  
+  vuln_df <- read_parquet(vuln_f)
+
+  vuln_mean_df <- vuln_df %>% fsubset(stat == 'mean') %>% select(-stat)
+  vuln_sd_df   <- vuln_df %>% fsubset(stat == 'sd')   %>% select(-stat)
+
+  vuln_mean_r <- rast(vuln_mean_df, crs = 'epsg:4326')
+  vuln_sd_r   <- rast(vuln_sd_df,   crs = 'epsg:4326')
+
+  str_dist <- rast(str_f) %>% setNames(scenarios) %>% project(vuln_mean_r)
+
+  impact_mean_r <- vuln_mean_r * str_dist
+  impact_sd_r   <- vuln_sd_r   * str_dist
+
+  impact_df <- as.data.frame(impact_mean_r, xy = TRUE) %>%
+    fmutate(stat = 'mean') %>%
+    rowbind(as.data.frame(impact_sd_r, xy = TRUE) %>%
+              fmutate(stat = 'sd')) %>%
+    fmutate(across(where(is.numeric), \(x) round(x, 3)))
+
+  write_parquet(impact_df, out_f)
+  return(impact_df)
+}
+
+plot_from_df <- function(df, plotstat = 'mean') {
+  if('stat' %in% names(df)) df <- fsubset(df, stat == plotstat) %>% select(x, y, everything(), -stat)
+  r <- rast(df)
+  plot(r)
+}
+```
+
+### Marine Heat Waves
+```{r}
+mhw_vuln_f <- vuln_mapfs[str_detect(vuln_mapfs, 'marine_heat_waves')]
+mhw_maps <- str_mapfs[str_detect(str_mapfs, 'sst-extremes') & str_detect(str_mapfs, 'ssp245_current|medium-term')]
+
+mhw_impact_df <- calc_impacts(vuln_f = mhw_vuln_f,
+                              str_f  = mhw_maps,
+                              out_f  = here('_output/impact_maps/impact_marine_heat_waves.parquet'))
+
+plot_from_df(mhw_impact_df)
+plot_from_df(mhw_impact_df, plotstat = 'sd')
+```
+
+### Nutrient Pollution
+```{r}
+nutr_vuln_f <- vuln_mapfs[str_detect(vuln_mapfs, 'nutrient_pollution')]
+nutr_maps <- str_mapfs[str_detect(str_mapfs, 'nutrient-input') & str_detect(str_mapfs, 'ssp2_current|medium-term')]
+
+nutr_impact_df <- calc_impacts(vuln_f = nutr_vuln_f,
+                              str_f   = nutr_maps,
+                              out_f   = here('_output/impact_maps/impact_nutrient_pollution.parquet'))
+plot_from_df(nutr_impact_df)
+plot_from_df(nutr_impact_df, plotstat = 'sd')
+```
+
+### Ocean Acidification
+
+```{r}
+oa_vuln_f <- vuln_mapfs[str_detect(vuln_mapfs, '_oa\\.')]
+
+oa_maps <- str_mapfs[str_detect(basename(str_mapfs), '^oa_') & str_detect(str_mapfs, 'ssp245_current|medium-term')]
+
+oa_impact_df <- calc_impacts(vuln_f = oa_vuln_f,
+                             str_f  = oa_maps,
+                             out_f  = here('_output/impact_maps/impact_ocean_acidification.parquet'))
+plot_from_df(oa_impact_df)
+plot_from_df(oa_impact_df, plotstat = 'sd')
+```
+

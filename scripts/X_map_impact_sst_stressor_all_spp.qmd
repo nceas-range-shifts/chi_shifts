@@ -1,0 +1,398 @@
+---
+title: Map SST impact stats across all species
+author: "Casey O'Hara"
+format:
+  html:
+    embed-resources: true
+execute:
+    warning: false
+---
+
+## Summary
+
+For SST rise, assign temperature bands to species, and generate temperature stressor maps for each band.  Then, somehow apply those maps across all species in a sensible way...
+
+## Data
+
+* vulnerability maps generated in 2_map_vulnerability_stressor_all_spp.qmd
+* SST data from BioOracle.
+
+## Methods
+
+* From AquaX metadata, generate bins of temperature preferences (upper range) for species.
+* For each bin, identify species, read in SDM, apply vulnerability score
+* For each bin, generate a stressor value map from SST data
+* For each bin/spp group, generate stats summaries of impact across all spp present.
+
+How to account for differences:
+
+* Benthic vs pelagic spp?  Depth zones?
+* Max/min T vs mean T?
+* Summarized by taxon?
+
+```{r attach packages}
+#| message: false
+#| warning: false
+#| 
+library(tidyverse)
+library(arrow)
+library(collapse)
+library(here)
+library(terra)
+
+# remotes::install_github('bio-oracle/biooracler')
+library(biooracler)
+
+source(here('common_fxns.R'))
+```
+
+### Identify spp depth
+
+From AquaX metadata, identify whether pelagic or benthic temperature is more relevant.  In the metadata, "benthopelagic" is classified as "demersal" which makes sense.  Assume demersal are generally more on bottom than surface.
+
+```{r}
+aquax_meta <- get_aquax_meta()
+aquax_wcol_raw <- aquax_meta %>%
+  select(aphia_id, pelagic, benthic, demersal, hab)
+
+benth_pel_check <- aquax_wcol_raw %>%
+  mutate(wcol = case_when(pelagic & !demersal & !benthic ~ 'pelagic',
+                          !pelagic & (demersal | benthic) ~ 'benthic',
+                          pelagic & (demersal | benthic) ~ 'benthic/pelagic', ### no cases
+                          TRUE ~ 'huh'))
+
+# benth_pel_check %>% select(hab, wcol_flag) %>% table()
+# #                  wcol_flag
+# # hab               benth   pel
+# #   bathydemersal    1419     0
+# #   bathypelagic        0   986
+# #   benthic         13575     0
+# #   benthopelagic    1083     0
+# #   demersal         5176     0
+# #   pelagic             0  1156
+# #   pelagic-neritic     0   625
+# #   pelagic-oceanic     0   393
+# #   reef-associated  5168     0
+# #   sessile          1928     0
+
+spp_wcol <- benth_pel_check %>%
+  select(aphia_id, wcol) %>%
+  distinct()
+```
+
+### Generate temperature bins
+
+Thermal niches from AquaX Dropbox.  Thermal stressor defined in same way as O'Hara et al. 2024 (taken from AquaMaps):
+
+$$s_T = \begin{cases}
+  0 &\text{where }\bar T \leq T_{max}^{p}\\
+  \frac{\bar T - T_{max}^{p}}{T_{max}^a - T_{max}^p} &\text{where }T_{max}^{p} < \bar T < T_{max}^{a}\\
+  1 &\text{where }\bar T \geq T_{max}^{p}
+\end{cases}$$
+               
+Where:
+
+* $T^a_{max}$ = 75th percentile + 1.5 × interquartile or absolute maximum mean annual temperature (whichever is greater)  
+* $T^p_{max}$ = 90th percentile of observed variation in mean annual temperature
+
+But: the AquaX data only has 75%ile and 95%ile, not 90%ile.  Let's use 75%ile instead (for now).
+               
+```{r}
+thermal_niches <- read_parquet(here('_data/thermal_niche/spp_thermal_niches.parquet')) %>%
+  fsubset(variable == 'thetao_mean') %>%
+  inner_join(spp_wcol, by = c('aphia_id', 'wcol')) %>%
+  mutate(t_a_max = q75 + (q75-q25)*1.5,
+         t_a_max = ifelse(t_a_max > max, max, t_a_max),
+         t_p_max = q75) %>%
+  select(t_a_max, t_p_max, aphia_id, wcol, src)
+```
+
+
+### Load Thermal Layers
+
+Need:
+
+* Current SST and seafloor T
+* Future SST and seafloor T - decade 2050 at SSP2-4.5 and SSP5-8.5.
+
+```{r}
+# biooracler::list_layers('Ocean Temperature')
+# # thetao_baseline_2000_2019_depthmean
+# # thetao_baseline_2000_2019_depthsurf
+# x <- biooracler::list_layers(simplify = FALSE)
+
+dataset_id <- c('thetao_ssp245_2020_2100_depthmean',
+                'thetao_ssp245_2020_2100_depthsurf',
+                'thetao_ssp585_2020_2100_depthmean',
+                'thetao_ssp585_2020_2100_depthsurf',
+                'thetao_baseline_2000_2019_depthmean',
+                'thetao_baseline_2000_2019_depthsurf')
+
+out_fs <- file.path(here('_data_raw/biooracle_2026/ocean_temp'), paste0(dataset_id, '.tif'))
+out_fs <- str_replace(out_fs, '2020_2100', '2050')
+out_fs <- str_replace(out_fs, '2000_2019', '2010')
+
+### Check what's actually in it (time range, variable names, units)
+# biooracler::info_layer(dataset_id['surface'])
+
+for (i in seq_along(dataset_id)) {
+  ### i <- 1
+  id <- dataset_id[i]
+  out_f <- out_fs[i]
+  
+  ### set time constraints to a single decade, depending on dataset
+  if(str_detect(id, 'ssp')) constraints <- list(time = c('2050-01-01T00:00:00Z', '2050-01-01T00:00:00Z'))
+  else  constraints <- list(time = c('2010-01-01T00:00:00Z', '2010-01-01T00:00:00Z'))
+
+  variables <- c('thetao_mean')
+  
+  ### Download as a SpatRaster(default)
+  if(!file.exists(out_f)) {
+    t_layer <- biooracler::download_layers(id, variables, constraints)
+    writeRaster(t_layer, out_f)
+  }
+}
+
+consolidated_f <- here('_data/ocean_temp/thetao_consolidated.parquet')
+if(!file.exists(consolidated_f)) {
+  r <- rast(out_fs) %>%
+    setNames(basename(out_fs) %>% str_remove('.tif'))
+  df <- as.data.frame(r, xy = TRUE) %>%
+    pivot_longer(-c(x, y), names_to = 'scenario', values_to = 't_mean') %>%
+    fmutate(layer = ifelse(str_detect(scenario, 'surf'), 'surface', 'seafloor'),
+            scenario = scenario %>% str_remove('_depth.+')) %>%
+    fmutate(t_mean = round(t_mean, 3),
+            ### repair rounding errors in x and y:
+            x = round(x, 3), y = round(y, 3)) %>%
+    ### simplify scenarios
+    fmutate(scenario = ifelse(str_detect(scenario, 'baseline'), 'current', scenario),
+          scenario = str_replace(scenario, 'thetao_ssp[0-9]', 'rcp'))
+
+  write_parquet(df, consolidated_f)
+}
+
+ocean_t_df <- read_parquet(consolidated_f)
+```
+
+### Calculate Thermal Stressors
+
+For each species: given an Aphia ID, $T^a_{max}$, $T^p_{max}$, and vulnerability score (in a single row data frame):
+
+* Load SDM
+* Load appropriate temperature maps as long data frame: 
+    * `scenario` = `current`, `rcp45_2050`, `rcp85_2050`
+    * `t_mean` = mean annual temp for that scenario
+* Intersect temp map with SDM
+* Calculate stressor intensity (define separate function and to each column)
+* Multiply stressor intensity by vulnerability
+
+```{r}
+calc_therm_stress <- function(t, t_a_max, t_p_max, digits = 3) {
+  t_stress <- (t - t_p_max) / (t_a_max / t_p_max)
+  t_stress[t_stress < 0] <- 0
+  t_stress[t_stress > 1] <- 1
+  return(round(t_stress, digits))
+}
+
+sst_impact_spp <- function(spp_df, t_map, 
+                           scen = c('current', 'rcp45_2050', 'rcp85_2050')) {
+  spp_sdm <- get_sdm(spp_df$aphia_id, scenario = scen) %>%
+    pivot_longer(cols = scen, names_to = 'scenario', values_to = 'presence') %>%
+    fsubset(!is.na(presence)) %>%
+    select(aphia_id, x, y, scenario)
+  spp_t_map <- t_map %>%
+    collapse::join(spp_sdm, how = 'inner', on = c('x', 'y', 'scenario')) %>%
+    fmutate(therm_stress = calc_therm_stress(t = t_mean, 
+                                             t_a_max = spp_df$t_a_max, 
+                                             t_p_max = spp_df$t_p_max))
+  
+}
+
+```
+
+### Iterate over taxa
+
+Consider: do these in taxonomic groups?  Break taxa into chunks of ~300 (more?), process each chunk and summarize; save as temp; then when all chunks done, read in and re-summarize.
+
+```{r}
+assign_chunks <- function(df, chunk_size = 500) {
+  tx_spp_count <- df$aphia_id %>% n_distinct()
+  
+  n_chunks <- max(1, round(tx_spp_count / chunk_size))
+  df_chunked <- df %>%
+    mutate(chunk = rep(1:n_chunks, length.out = tx_spp_count))
+  return(df_chunked)
+}
+
+sample_decomp2 <- function(df) {
+  ### MAJOR REWRITE - Claude suggestions for full vectorization and use of
+  ### collapse::fsum etc within group objects
+  
+  # df <- tx_tmp_dfs %>% fsubset(x < -170 & scenario == 'rcp45_2050')
+  g <- GRP(df, ~ x + y + scenario)
+  
+  n     <- df$n
+  mn    <- df$mean
+  var_i <- df$sd^2
+  
+  ### broadcast pooled n and pooled mean back to row level (for deviations)
+  pool_n_bc    <- fsum(n, g = g, TRA = "replace")
+  pool_mean_bc <- fsum(n * mn, g = g, TRA = "replace") / pool_n_bc
+  deviation    <- mn - pool_mean_bc
+  
+  SS <- (n - 1) * var_i
+  SS[n == 1] <- 0
+  
+  ### group-level pooled n / mean / var / sd
+  pool_n    <- fsum(n, g = g)
+  pool_mean <- fsum(n * mn, g = g) / pool_n
+  pool_dev_sum <- fsum(n * deviation^2, g = g)
+  pool_SS   <- fsum(SS, g = g) + pool_dev_sum
+  pool_var  <- pool_SS / (pool_n - 1)
+  pool_sd   <- sqrt(pool_var)
+  
+  summary_df <- cbind(
+    g$groups,
+    n    = pool_n,
+    mean = pool_mean,
+    sd   = pool_sd
+  )
+  
+  return(summary_df)
+}
+```
+
+```{r}
+
+t_map_list <- list(
+  pelagic = ocean_t_df %>% fsubset(layer == 'surface'),
+  benthic = ocean_t_df %>% fsubset(layer == 'seafloor')
+)
+
+```
+
+```{r}
+
+spp_envelope_df <- get_spp_vuln() %>%
+  select(aphia_id, taxon) %>%
+  distinct() %>%
+  inner_join(thermal_niches, by = 'aphia_id')
+tx_vec <- spp_envelope_df$taxon %>% unique() %>% sort()
+  
+tx_sst_filestem <- here('_output/impact_maps/impact_by_taxon/impact_sst_%s.parquet')
+
+for(tx in tx_vec) {
+  ### tx <- tx_vec[1]
+  tx_sst_file <- sprintf(tx_sst_filestem, tx)
+  if(file.exists(tx_sst_file)) next()
+  
+  # break into chunks of size ~500?
+  tx_df <- spp_envelope_df %>%
+    filter(taxon == tx) %>%
+    assign_chunks()
+  
+  chunk_vec <- tx_df$chunk %>% unique() %>% sort()
+  
+  tmp_tx_sst_fstem <- here('tmp/impact_sst/impact_sst_%s_%s.parquet')
+  if(!dir.exists(dirname(tmp_tx_sst_fstem))) dir.create(dirname(tmp_tx_sst_fstem))
+  for(i in chunk_vec) {
+    ### i <- chunk_vec[1]
+    tmp_tx_sst_file <- sprintf(tmp_tx_sst_fstem, tx, i)
+    if(file.exists(tmp_tx_sst_file)) next()
+
+    
+    tx_chunk_df <- tx_df %>%
+      filter(chunk == i)
+    spp_vec <- tx_chunk_df$aphia_id
+    
+    set_collapse(nthreads = 1)
+    spp_therm_impact_list <- parallel::mclapply(
+      mc.cores = 64,
+      X = spp_vec,
+      FUN = \(x) {
+        ### x <- spp_vec[1]
+        spp_df <- tx_chunk_df %>% fsubset(aphia_id == x)
+        t_map  <- t_map_list[[spp_df$wcol]]
+        out_df <- sst_impact_spp(spp_df, t_map)
+        return(out_df)
+      })
+    set_collapse(nthreads = 4)
+    
+    ### process list into df, then summarize across scenarios
+    tx_chunk_therm_impact_df <- spp_therm_impact_list %>%
+      collapse::rowbind() %>%
+      select(x, y, scenario, therm_stress)
+    tx_chunk_summary_df <- tx_chunk_therm_impact_df %>%
+      fgroup_by(x, y, scenario) %>%
+      ### since skipping skew and kurtosis, skip qsu() and just go straight for fsummarize:
+      fsummarize(n    = fnobs(therm_stress), 
+                 mean = fmean(therm_stress), 
+                 sd   = fsd(therm_stress))
+    
+    ### write out temp file
+    write_parquet(tx_chunk_summary_df, tmp_tx_sst_file)
+  } ### END LOOP OVER CHUNKS
+  
+  
+  
+  ###############################
+  ###   Assemble temp files   ###
+  ###############################
+  ### read in all summary chunks, bind together, and resummarize
+  tx_tmp_fs <- list.files(dirname(tmp_tx_sst_fstem),
+                          pattern = paste0('impact_sst_', tx),
+                          full.names = TRUE)
+
+  ### small taxon, only one chunk, just pivot longer and save out
+  if(length(chunk_vec) == 1 & length(tx_tmp_fs) == 1) {
+    tmp_df <- read_parquet(tx_tmp_fs) %>%
+      janitor::clean_names() %>%
+      select(x, y, scenario, n, mean, sd) %>%
+      pivot_longer(n:sd, names_to = 'stat', values_to = 'value') %>%
+      fmutate(value = round(value, 4)) %>%
+      pivot_wider(names_from = 'scenario', values_from = 'value')
+                       
+    write_parquet(tmp_df, tx_sst_file)
+    stopifnot(file.exists(tx_sst_file))
+    unlink(tx_tmp_fs)
+    next()
+  }
+  
+  if(length(chunk_vec) != length(tx_tmp_fs)) stop('Mismatch between chunk length and temp file length!')
+  
+  ### More spp - more chunks - use arrow::open_dataset to more quickly read in and
+  ### process before even getting data into R
+  tx_tmp_dfs <- arrow::open_dataset(tx_tmp_fs) %>%
+    rename_with(janitor::make_clean_names) %>%   
+    filter(n > 0) %>%                            ### pushed down to Arrow, not R
+    collect()                                    ### materializes only the filtered rows
+
+  set_collapse(nthreads = 4)
+  
+  system.time({
+  tx_summary_df <- tx_tmp_dfs %>% 
+    sample_decomp2() %>%
+    pivot_longer(n:sd, names_to = 'stat', values_to = 'value') %>%
+    fmutate(value = round(value, 4)) %>%
+    pivot_wider(names_from = 'scenario', values_from = 'value')
+  })
+  write_parquet(tx_summary_df, tx_sst_file)
+  unlink(tx_tmp_fs)
+  
+}
+```
+
+### Combine taxon-level into all spp impact
+
+Read in all Parquet files for taxon-level; use `sample_decomp2()` to recombine for each scenario.
+
+```{r}
+tx_sst_impact_fs <- list.files(here('_output/impact_maps/impact_by_taxon'), 
+                               pattern = 'impact_sst.+.parquet', full.names = TRUE)
+tx_sst_impacts_df <- parallel::mclapply(tx_sst_impact_fs, mc.cores = length(tx_sst_impact_fs),
+                                        FUN = read_parquet) %>%
+  rowbind()
+
+
+```
+

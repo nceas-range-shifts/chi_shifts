@@ -1,0 +1,417 @@
+---
+title: Map community change
+author: "Casey O'Hara"
+format:
+  html:
+    embed-resources: true
+execute:
+    warning: false
+---
+
+## Summary
+
+For each pixel, identify for each scenario the changes in community composition by taxon relative to the current composition.
+
+* Count: persistence (current & scenario), colonization (!current & scenario), extirpation (current & !scenario)
+* Turnover: SSI $QS = \frac{2a}{2a + b + c}$ where:
+    * $a$ is species shared by both sites (scenarios) - persistence
+    * $b$ is species unique to first site (current) - extirpation
+    * $c$ is species unique to second site (scenario) - colonization
+
+## Data
+
+* AquaX species distribution models from Reygondeau et al. (2026). AquaX: An enhanced and revised AquaMaps framework to model marine species distributions and biodiversity. PLOS ONE, 21(2), e0335823. https://doi.org/10.1371/journal.pone.0335823
+
+## Methods
+
+* Read in SDMs (by slice) for all species in taxon as long data frame
+* For each scenario, by row (spp and pixel) classify from presence/absence to persistence/colonization/extirpation
+* Group by pixel and classification, and summarize
+* Group by pixel and summarize SSI
+* Save out as raster or parquet.
+
+Once complete for each taxon, then combine and calculate across all taxa.
+
+```{r attach packages}
+#| message: false
+#| 
+library(tidyverse)
+library(here)
+library(duckdb) 
+library(arrow)
+library(collapse)
+library(terra)
+library(cowplot)
+
+source(here('common_fxns.R'))
+```
+
+### Gather species, taxa, and vulnerability scores
+
+```{r gather data}
+available_spp <- list.files(here_aquax('SDM')) %>% 
+  str_extract('[0-9]+') %>% 
+  as.numeric()
+aquax_meta <- get_aquax_meta() %>%
+  filter(aphia_id %in% available_spp)
+spp_tx_df <- get_spp_vuln() %>%
+  ### spp vuln includes the taxa we want
+  select(aphia_id, taxon) %>%
+  distinct() %>%
+  filter(aphia_id %in% aquax_meta$aphia_id)
+
+```
+
+### Iterate over taxa
+
+* process_slice to grab sdms for a taxon, join vuln, and process down to summary stats
+
+```{r define helper functions}
+
+process_slice <- function(sdm_df, digits = NULL) {
+  ### if no observations in this slice, move along
+  if(nrow(sdm_df) == 0) return(data.frame())
+  
+  ### classify each spp, then join all scenarios
+  sdm_tx_vuln_df <- lapply(X = scenario, 
+                           FUN = pull_scenario_stats, 
+                           d_array = sdm_tx_vuln_array) %>%
+    ### purrr::reduce to apply full join programmatically across all scenarios
+    purrr::reduce(.f = full_join, by = c('x', 'y', 'stat'))
+  if(!is.null(digits)) {
+    sdm_tx_vuln_df <- sdm_tx_vuln_df %>%
+      ### collapse::fmutate doesn't understand this syntax alas
+      collapse::fmutate(across(.cols = all_of(scenario), .fns = round, digits = digits))
+  }
+  return(sdm_tx_vuln_df)
+}
+
+classify_scenario <- function(sc, d_array) {
+  df <- d_array[ , , sc] %>%
+    as.data.frame() %>%
+    janitor::clean_names() %>%
+    ### the qsu seems to fill in zero where no observations...
+    ### drop those obs here, let the purrr::reduce fill in values as NA
+    collapse::fsubset(n > 0) %>%
+    ### drop min and max values... keep mean, sd, skew, kurtosis, n
+    select(-min, -max) %>%
+    ### qsu creates a group column mashing x and y with a '.' separator
+    separate_wider_regex(variable, patterns = c(x = '^-?[0-9]{1,3}\\.[0-9]{3}',
+                                                '\\.', ### drop the dot
+                                                y = '-?[0-9]{1,3}\\.[0-9]{3}$')) %>%
+    pivot_longer(cols = -c('x', 'y'), names_to = 'stat', values_to = sc) %>%
+    collapse::fmutate(x = as.numeric(x), y = as.numeric(y))
+
+  return(df)
+}
+```
+
+
+### Iterate over taxa
+
+For each taxon, create a composition map.  "Map" is a parquet file containing columns:
+
+* x, y (numeric): x/y in degrees for a pixel
+* stat: the statistic described in this observation: n, persistence, colonization, extirpation, SSI
+* rcp45_2050: projected value of this stat for this pixel for this scenario
+* rcp85_2050: projected value of this stat for this pixel for this scenario
+
+```{r}
+### set the number of vertical slices by degrees
+x_px     <- 360 / 0.05       ### number of pixels in x axis
+xslice_w <- 5                ### slice width in degrees
+xslice_n <- 360 / xslice_w   ### number of vertical slices
+if(x_px %% xslice_n != 0) stop('Choose a slice width that divides evenly into 360!')
+
+```
+
+
+```{r iterate over taxa}
+tx_vec <- spp_tx_df$taxon %>% unique() %>% sort()
+
+scenario <- c('current', 'rcp45_2050', 'rcp85_2050')
+
+for(tx in tx_vec) {
+  ### tx <- tx_vec[1]
+
+  out_fstem <- here::here('_output/spp_turnover_maps/turnover_by_taxon/tx_turnover_%s.parquet') 
+   
+  out_f <- sprintf(out_fstem, tx)
+  if(file.exists(out_f)) next()
+
+  message(paste0('Creating ', basename(out_f), '\n'))
+
+  tx_df <- spp_tx_df %>%
+      filter(taxon == tx)
+  
+  #########################################
+  ### iterate slices for taxon/stressor ###
+  #########################################
+
+  tmp_out_fstem <- here::here('tmp/tx_turnover/tx_turnover_%s_%s.parquet')
+  if(!dir.exists(dirname(tmp_out_fstem))) dir.create(dirname(tmp_out_fstem))
+  
+  ### set the number of vertical slices by degrees
+  x_px     <- 360 / 0.05                  ### number of pixels in x axis
+  xslice_w <- ifelse(tx == 'fish', 3, 8)  ### slice width in degrees (fish is huge taxon, smaller slices!)
+  xslice_n <- 360 / xslice_w              ### number of vertical slices
+  if(x_px %% xslice_n != 0) stop('Choose a slice width that divides evenly into 360!')
+
+  slice_vec <- 1:xslice_n
+
+  for(i in slice_vec) {
+    ### i <- 1
+    ### generate xrange for this iteration.  NOTE: this works
+    ### because actual x values fall on pixel centers, not edges
+    xrange <- -180 + c((i-1), i) * xslice_w
+    
+    tmp_out_f <- sprintf(tmp_out_fstem, tx, paste0(xrange, collapse = '_'))
+    if(file.exists(tmp_out_f)) next()
+    
+    #########################################
+    ### get sdms for this slice and taxon ###
+    #########################################
+    sdm_df <- get_sdm(aphia_id = tx_df$aphia_id %>% unique(), 
+                      scenario = scenario,
+                      xrange = xrange,
+                      apply_thresh = TRUE)
+
+    ### FOR EACH SCENARIO:
+    future_scens <- scenario[scenario != 'current']
+
+    ### Reclassify each spp/pixel as persistent, extirpated, or colonized
+    sdm_reclass <- sdm_df %>%
+      ### present = 1, absent = 0
+      fmutate(across(all_of(scenario), \(z) !is.na(z))) %>%
+      ### extirp = 1 + 0 = 1; coloniz = 0 + 2 = 2; persist = 1 + 2 = 3
+      fmutate(across(all_of(future_scens), \(z) .$current + z*2))
+    
+    ### Summarize across species for each pixel
+    reclass_vec <- c('extirpation', 'colonization', 'persistence')
+    sdm_summary <- parallel::mclapply(mc.cores = length(reclass_vec),
+        X = seq_along(reclass_vec),
+        FUN = function(i) {
+          sdm_reclass %>%
+            fgroup_by(x, y) %>%
+            fsummarize(across(all_of(future_scens), \(z) sum(z == i)))
+        }) %>% 
+      setNames(reclass_vec) %>%
+      collapse::rowbind(idcol = 'stat') %>%
+      fmutate(stat = as.character(stat))
+    
+    ### Calculate SSI from persistence/extirp/colonization
+    sdm_ssi_df <- parallel::mclapply(mc.cores = length(future_scens),
+        X = future_scens,
+        FUN = function(sc) {
+          ### sc <- future_scens[1]
+          ssi_df <- sdm_summary %>%
+            select(x, y, stat, scenario = all_of(sc)) %>%
+            pivot_wider(names_from = 'stat', values_from = 'scenario') %>%
+            fmutate(ssi = 2 * persistence / (2 * persistence + extirpation + colonization)) %>%
+            select(x, y, !!sc := ssi)
+        }) %>%
+      purrr::reduce(.f = full_join, by = c('x', 'y')) %>%
+      fmutate(stat = 'ssi')
+      
+    ### write out to tmp file
+    arrow::write_parquet(rowbind(sdm_summary, sdm_ssi_df), tmp_out_f)
+    
+  } ### END ITERATION OVER SLICES
+
+  ##########################################
+  ### assemble slices for taxon turnover ###
+  ##########################################
+
+  tmp_fs <- list.files(dirname(tmp_out_fstem), pattern = tx, full.names = TRUE)
+  
+  complete_tx_turnover_df <- parallel::mclapply(
+    X = tmp_fs,
+    FUN = arrow::read_parquet,
+    mc.cores = 36
+  ) %>%
+    bind_rows()
+
+  arrow::write_parquet(complete_tx_turnover_df, out_f)
+  
+  unlink(tmp_fs)  ### clean up temp directory
+
+} ### END LOOP OVER TAXA
+```
+
+### Combine taxa maps
+
+```{r}
+all_spp_turnover_f <- here('_output/spp_turnover_maps/all_spp_turnover.parquet')
+
+if(!file.exists(all_spp_turnover_f)) {
+  tx_map_fs <- list.files(here('_output/spp_turnover_maps/turnover_by_taxon'), 
+                        pattern = 'tx_turnover.+.parquet', full.names = TRUE)
+  
+  tx_vec <- basename(tx_map_fs) %>% str_remove_all('tx_turnover_|.parquet')
+  
+  tx_maps <- parallel::mclapply(mc.cores = length(tx_map_fs),
+                                X = tx_map_fs, 
+                                FUN = \(z) {
+                                  read_parquet(z) %>%
+                                    pivot_wider(names_from = stat, values_from = c(rcp45_2050, rcp85_2050))
+                                  }) %>%
+    setNames(tx_vec) %>%
+    rowbind(idcol = 'taxon')
+  
+  all_maps <- tx_maps %>%
+    fgroup_by(x, y) %>%
+    fsummarize(across(-c(x, y, taxon), sum))
+  
+  pers_colo_extirp <- all_maps %>%
+    select(-contains('ssi')) %>%
+    setNames(str_replace(names(.), '2050_', '2050X')) %>%
+    pivot_longer(cols = -c(x, y), names_to = c('.value', 'stat'), names_sep = 'X')
+  
+  ssi_df <- all_maps %>%
+    fmutate(rcp45_2050 = 2 * rcp45_2050_persistence / (2 * rcp45_2050_persistence + rcp45_2050_extirpation + rcp45_2050_colonization),
+            rcp85_2050 = 2 * rcp85_2050_persistence / (2 * rcp85_2050_persistence + rcp85_2050_extirpation + rcp85_2050_colonization)) %>%
+    select(x, y, rcp45_2050, rcp85_2050) %>%
+    fmutate(stat = 'ssi')
+  
+  all_spp_turnover <- rowbind(pers_colo_extirp, ssi_df)
+  
+  write_parquet(all_spp_turnover, all_spp_turnover_f)
+}
+```
+
+### Maps
+
+::: panel-tabset
+
+#### Persistence 
+
+Number of spp in both current period and future
+
+```{r persistence map}
+#| fig-height: 3
+
+all_spp_turnover <- read_parquet(all_spp_turnover_f) 
+
+all_spp_turnover %>%
+  fsubset(stat == 'persistence') %>%
+  select(-stat) %>%
+  rast() %>%
+  plot()
+```
+
+#### Colonization 
+
+Number of spp in future period but NOT in current
+
+```{r colonization map}
+#| fig-height: 3
+
+all_spp_turnover %>%
+  fsubset(stat == 'colonization') %>%
+  select(-stat) %>%
+  rast() %>%
+  plot()
+```
+
+#### Extirpation 
+
+Number of spp in current period but NOT future
+
+```{r extirpation map}
+#| fig-height: 3
+
+all_spp_turnover %>%
+  fsubset(stat == 'extirpation') %>%
+  select(-stat) %>%
+  rast() %>%
+  plot()
+```
+
+:::
+
+#### Spp Richness 
+
+```{r spp community change}
+#| fig-height: 6
+#| fig-width: 6
+
+community_change_df <- all_spp_turnover %>%
+  pivot_longer(cols = c('rcp45_2050', 'rcp85_2050'), names_to = 'scenario', values_to = 'value') %>%
+  pivot_wider(names_from = stat, values_from = value) %>%
+  mutate(spp_r_current = persistence + extirpation,
+         spp_r_change  = colonization - extirpation) %>%
+  select(x, y, scenario, spp_r_current, spp_r_change, ssi) %>%
+  mutate(turnover = 1 - ssi)
+
+out_f <- here('ms_figs', 'x_spp_richness.png')
+
+if(!file.exists(out_f)) {
+  spp_r_now <- ggplot(community_change_df %>% 
+                        filter(scenario == 'rcp45_2050'), 
+                      aes(x, y, fill = spp_r_current)) +
+    geom_raster() +
+    scale_fill_viridis_c() +
+    coord_fixed() +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0)) +
+    labs(fill = 'N spp\n(current)') +
+    theme_minimal() +
+    theme(axis.text = element_blank(),
+          axis.title = element_blank(),
+          panel.background = element_rect(fill = 'white'))
+
+  div_pal <- hcl.colors(n = 3, pal = 'Red-Green')
+  spp_change <- ggplot(community_change_df, 
+                            aes(x, y, fill = log10((spp_r_current + spp_r_change)/spp_r_current))) +
+    geom_raster() +
+    scale_fill_gradient2(low = div_pal[1], mid = div_pal[2], high = div_pal[3], midpoint = 0) +
+    coord_fixed() +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0)) +
+    facet_wrap(~scenario, nrow = 1) +
+    labs(fill = 'ΔN spp\n(% change)') +
+    theme_minimal() +
+    theme(axis.text = element_blank(),
+          axis.title = element_blank(),
+          panel.background = element_rect(fill = 'white'))
+
+
+  p <- ggdraw() +
+    draw_plot(spp_r_now, x = 0, y = .38, width = 1, height = .62) +
+    draw_plot(spp_change, x = 0, y = 0, width = 1, height = .38)
+
+  ggsave(out_f, height = 6, width = 8, dpi = 300)
+}
+  
+knitr::include_graphics(out_f)
+```
+
+
+#### Turnover 
+
+Sorensen similarity index: 1 = identical community, 0 = complete turnover - flip this so 1 = complete turnover, 0 = no turnover
+
+```{r turnover}
+#| fig-height: 6
+#| fig-width: 6
+out_f <- here('ms_figs', 'x_spp_turnover.png')
+
+if(!file.exists(out_f)) {
+  p <- ggplot(community_change_df, aes(x, y, fill = turnover)) +
+    geom_raster() +
+    scale_fill_viridis_c() +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0)) +
+    coord_fixed() +
+    facet_wrap(~ scenario, ncol = 1, strip.position = 'left') +
+    labs(fill = 'Turnover\n(1-ssi)') +
+    theme_minimal() +
+    theme(axis.text = element_blank(),
+          axis.title = element_blank(),
+          panel.background = element_rect(fill = 'white'))
+
+  ggsave(out_f, height = 8, width = 8, dpi = 300)
+}
+knitr::include_graphics(out_f)
+```
+
