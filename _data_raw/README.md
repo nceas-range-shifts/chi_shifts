@@ -1,1 +1,0 @@
-Some files in the data folder should be added to .gitignore - these include files auto-downloaded in scripts.

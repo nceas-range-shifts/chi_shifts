@@ -1,0 +1,10 @@
+gf_match_id,gapfill,match
+1,none,species
+2,none,genus
+3,none,family
+4,none,order
+5,none,class
+6,genus,NA
+7,family,NA
+8,order,NA
+9,class,NA

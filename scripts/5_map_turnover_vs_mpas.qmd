@@ -1,0 +1,123 @@
+---
+title: Map species and functional change against MPAs
+author: "Casey O'Hara"
+format:
+  html:
+    embed-resources: true
+execute:
+    warning: false
+---
+
+## Summary
+
+Compare turnover metrics against MPA coverage
+
+## Data
+
+* AquaX species distribution models from Reygondeau et al. (2026). AquaX: An enhanced and revised AquaMaps framework to model marine species distributions and biodiversity. PLOS ONE, 21(2), e0335823. https://doi.org/10.1371/journal.pone.0335823
+* Function entities from O'Hara et al. (2024). Cumulative human impacts on global marine fauna highlight risk to biological and functional diversity. PLOS ONE, 19(9), e0309788. https://doi.org/10.1371/journal.pone.0309788
+* MPAs from World Database on Protected Areas: 
+
+
+## Methods
+
+* Rasterize MPAs to same resolution as spp and FE turnover maps
+* rasterize the SPP and FE turnover maps
+* use zonal stats to compare turnover vs. protection.
+
+```{r}
+library(tidyverse)
+library(here)
+library(terra)
+library(sf)
+library(arrow)
+library(collapse)
+```
+
+### Rasterize WDPA by IUCN protected area class
+
+Skip OECMs
+```{r}
+base_r <- rast(ext(c(-180, 180, -90, 90)), res = 0.05, crs = 'epsg:4326')
+
+wdpa_f <- here('_data/unep_wcmc_2026/wdpa_wdoecm_mpas_july2026.tif')
+
+mpa_r <- rast(wdpa_f)
+```
+
+### Read in and rasterize turnover metrics
+
+```{r}
+spp_turnover_df <- read_parquet(here('_output/spp_turnover_maps/all_spp_turnover.parquet')) %>%
+  collapse::fsubset(stat == 'ssi') %>%
+  select(-stat)
+fe_turnover_df  <- read_parquet(here('_output/fe_turnover_maps/all_fe_turnover.parquet')) %>%
+  collapse::fsubset(stat == 'ssi') %>%
+  select(-stat)
+
+### rasterize SSI values then invert
+spp_turnover_r <- rast(spp_turnover_df, type = 'xyz', crs = 'epsg:4326') %>%
+  extend(mpa_r)
+spp_turnover_r <- 1 - spp_turnover_r; plot(spp_turnover_r)
+
+fe_turnover_r <- rast(fe_turnover_df, type = 'xyz', crs = 'epsg:4326') %>%
+  extend(mpa_r)
+fe_turnover_r <- 1 - fe_turnover_r; plot(fe_turnover_r)
+```
+
+### Compare turnover metrics with MPAs
+
+Focus just on MPAs for now - OECM data seems sparse and incomplete.  Currently comparing ALL unprotected areas (EEZ and ABNJ, globally) against various protection levels - finer scale comparisions to try:
+
+* just within EEZs (by georegion)? by marine ecoregion (province level?)
+
+```{r}
+mpa_r_all <- mpa_r; mpa_r_all[is.na(mpa_r_all)] <- -1
+spp_turnover_mpa_df <- zonal(spp_turnover_r, mpa_r_all, fun = 'mean', na.rm = TRUE)
+```
+
+```{r}
+fe_turnover_mpa_df <- zonal(fe_turnover_r, mpa_r_all, fun = 'mean', na.rm = TRUE)
+```
+
+### Examine by Georegion
+
+
+
+```{r}
+eez_sf <- st_read('/home/shares/usgs-cap-rangeshifts/spatial/World_EEZ_v12_20231025_gpkg/eez_v12.gpkg') |>
+  janitor::clean_names() |>
+  ### coerce numeric UN codes to zero-padded 3 digit character
+  mutate(across(starts_with('un_'), .fns = \(x) ifelse(is.na(x), NA, sprintf('%03d', as.integer(x))))) |>
+  ### Use territorial code if available; otherwise use sov code
+  mutate(m49_code = ifelse(is.na(un_ter1), un_sov1, un_ter1))
+
+### georegions in semicolon-sep values, so use read_csv2
+unm49_df <- read_csv2(here('_data_raw/UNSD — Methodology.csv')) |>
+  janitor::clean_names()
+
+eez_georgns <- inner_join(eez_sf, unm49_df, by = c('m49_code')) %>%
+  mutate(intermediate_region_code = ifelse(is.na(intermediate_region_code), 
+                                           sub_region_code, 
+                                           intermediate_region_code)) %>%
+  mutate(across(contains('region_code'), as.integer))
+
+dropped_ter <- anti_join(eez_sf, unm49_df, by = c('m49_code'))
+
+eez_r  <- rasterize(eez_georgns |> mutate(m49_code = as.integer(m49_code)), 
+                    base_r, field = 'm49_code')
+rgn1_r <- rasterize(eez_georgns |> filter(!is.na(region_code)), 
+                    base_r, field = 'region_code')
+rgn2_r <- rasterize(eez_georgns |> filter(!is.na(sub_region_code)), 
+                    base_r, field = 'sub_region_code')
+rgn3_r <- rasterize(eez_georgns |> filter(!is.na(sub_region_code)), 
+                    base_r, field = 'intermediate_region_code')
+
+rgn_stack <- c(eez_r,rgn1_r, rgn2_r, rgn3_r) %>%
+  setNames(c('un_m49_code', 'region_code', 'sub_region_code', 'intermediate_region_code'))
+
+plot(rgn_stack)
+
+writeRaster(rgn_stack, here('_data/region_codes.tif'), overwrite = TRUE)
+```
+

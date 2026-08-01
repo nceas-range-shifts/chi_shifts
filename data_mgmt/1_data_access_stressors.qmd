@@ -17,8 +17,8 @@ Data are hosted at https://knb.ecoinformatics.org/view/doi:10.5063/F18K77KZ:
 * habitat_maps - get
 * pressure_raw - get
 * pressures_rescaled - get
-* impacts_by_pressure - skip
-* cumulative_impact - skip
+* impacts_by_pressure - get
+* cumulative_impact - get
 
 ## Methods
 
@@ -106,6 +106,52 @@ if(!dir.exists(prs_rescaled_dir)) {
   file.remove(destfile)
 }
 ```
+
+### Download habitat-based impact maps
+
+```{r}
+impacts_dir <- here::here('_data_raw/halpern_2025/impacts_by_pressure')
+if(dir.exists(impacts_dir)) {
+  ### check if any tifs; if not, delete and re-download
+  impact_maps_existing <- list.files(impacts_dir, pattern = '.tif$')
+  if(length(impact_maps_existing) == 0) {
+    unlink(impacts_dir, recursive = TRUE)
+  }
+}
+
+if(!dir.exists(impacts_dir)) {
+  impact_url <- 'https://knb.ecoinformatics.org/knb/d1/mn/v2/object/urn%3Auuid%3A3e6e14d7-a16e-4c33-8a55-18719e96e3c4'
+  destfile <- here::here('impacts_by_pressure.zip')
+  download.file(impact_url, destfile, mode = 'wb')
+  
+  exdir <- here::here('_data_raw/halpern_2025')
+  unzip(destfile, exdir = exdir)
+  file.remove(destfile)
+}
+```
+
+```{r}
+chi_dir <- here::here('_data_raw/halpern_2025/cumulative_impact')
+if(dir.exists(chi_dir)) {
+  ### check if any tifs; if not, delete and re-download
+  chi_maps_existing <- list.files(chi_dir, pattern = '.tif$')
+  if(length(chi_maps_existing) == 0) {
+    unlink(chi_dir, recursive = TRUE)
+  }
+}
+
+if(!dir.exists(chi_dir)) {
+  chi_url <- 'https://knb.ecoinformatics.org/knb/d1/mn/v2/object/urn%3Auuid%3A15a99425-c3cc-46a5-a3b4-3b26f4df29aa'
+  destfile <- here::here('cumulative_impact.zip')
+  download.file(chi_url, destfile, mode = 'wb')
+  
+  exdir <- here::here('_data_raw/halpern_2025')
+  unzip(destfile, exdir = exdir)
+  file.remove(destfile)
+}
+```
+
+#### remove cruft
 
 ```{r}
 cruft <- list.files(here::here('_data_raw/halpern_2025'), recursive = TRUE, include.dirs = TRUE,

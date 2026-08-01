@@ -57,6 +57,7 @@ Load in the SDMs for this sample of species.  For nimble testing, let's take a s
 Let's define some versions of functions:
 
 ```{r}
+#| eval: false
 get_sdm_duckdb <- function(aphia_id, 
                     scenario = c('Current', 
                                  'RCP26_2050', 'RCP26_2100',
@@ -167,6 +168,7 @@ get_sdm_dplyr <- function(aphia_id,
 
 
 ```{r}
+#| eval: false
 set.seed(42)
 test_df <- spp_vuln_df %>%
     filter(taxon == 'marine_mammals' & stressor == 'wildlife_strike') %>%
@@ -206,6 +208,7 @@ sdm_df <- sdm_df1 %>% inner_join(sdm_sample_cells, by = c('x', 'y'))
 test with more species, including filtering by x columns:
 
 ```{r}
+#| eval: false
 ### all mammals:
 test_df2 <- spp_vuln_df %>%
     filter(taxon == 'marine_mammals' & stressor == 'wildlife_strike')
@@ -235,7 +238,9 @@ After thresholding, presence = NA or 1; multiply presence in each scenario colum
 ### Test dplyr speed
 
 ```{r dplyr_version}
- system.time({
+#| eval: false
+
+system.time({
     spp_vuln_df <- sdm_df %>%
         left_join(test_df %>% select(aphia_id, vuln), by = 'aphia_id') %>%
         mutate(across(all_of(scenario), ~.x * vuln))
@@ -258,6 +263,7 @@ system.time({
 The `data.table` methods are about twice as fast:
 
 ```{r data.table_version}
+#| eval: false
 test_dt <- test_df %>% select(aphia_id, vuln) %>%
     as.data.table(key = 'aphia_id')
 sdm_dt <- sdm_df %>%
@@ -317,6 +323,7 @@ This can calculate across all columns in 1/10th the time data.table takes to cal
 Does the `N` accurately count distinct aphia IDs?  There should be few occasions where `n_distinct(aphia_id)` is different than the number of observations.
 
 ```{r}
+#| eval: false
 library(collapse)
 
 system.time({
@@ -353,6 +360,7 @@ system.time({
 Can we read in each SDM in pieces, e.g., just observations where `x` is a specific value or range?  If we can do this quickly and efficiently, we can summarize more species in smaller chunks and save out.  It doesn't look like `arrow::read_parquet` can do this...  but perhaps read in and filter with `data.table`:  `dt[x == -179.975]`:
 
 ```{r}
+#| eval: false
 test_id <- test_df$aphia_id[1]
 scenario = c('Current', 'RCP26_2050', 'RCP26_2100',
              'RCP45_2050', 'RCP45_2100', 'RCP85_2050', 'RCP85_2100') %>%
@@ -381,6 +389,7 @@ system.time({
 
 
 ```{r}
+#| eval: false
 ### Using dplyr::select
 system.time({
   x <- lapply(1:100, FUN = function(i, id, scen, fstem, x) {
@@ -422,6 +431,7 @@ identical(
 ```
 
 ```{r}
+#| eval: false
 ### Using dplyr::select; add in x filter
 xvec <- c(-179.875, -179.825)
 system.time({
@@ -488,32 +498,43 @@ swapping it in for `get_sdm()`.
 ```{r}
 ### Correctness check: results should match get_sdm() (mod row order)
 test_df <- spp_vuln_df %>%
-  filter(taxon == 'marine_mammals' & stressor == 'wildlife_strike')
+  filter(taxon == 'cephalopods' & stressor == 'oa')
 scenario <- c('current', 'rcp45_2050', 'rcp85_2050')
 xrange <- c(-180, -170)
 
+system.time({
 sdm_orig <- get_sdm(aphia_id = test_df$aphia_id, scenario = scenario, xrange = xrange) %>%
   arrange(aphia_id, x, y)
+})
+#    user  system elapsed 
+#  38.581  26.718  17.304 mammals
 
+
+system.time({
 sdm_multi <- get_sdm_multi(aphia_id = test_df$aphia_id, scenario = scenario, xrange = xrange) %>%
   arrange(aphia_id, x, y)
+})
+#    user  system elapsed 
+#  29.813  14.536   9.762 mammals
 
 identical(
-  sdm_orig %>% select(x, y, aphia_id, all_of(scenario)) %>% as.data.frame(),
-  sdm_multi %>% select(x, y, aphia_id, all_of(scenario)) %>% as.data.frame()
+  sdm_orig %>% select(x, y, aphia_id, all_of(scenario)) %>% as.data.frame() %>% arrange(x, y, aphia_id),
+  sdm_multi %>% select(x, y, aphia_id, all_of(scenario)) %>% as.data.frame() %>% arrange(x, y, aphia_id)
 )
 ```
 
 ```{r}
 ### Timing comparison: current per-species mclapply approach vs batched
-### duckdb approach, across a range of batch sizes.  Use a taxon with
-### enough species to be representative (e.g. fish or a mid-size taxon)
-### rather than the tiny marine_mammals test set above.
-bench_ids <- test_df$aphia_id  ### swap in a larger taxon's aphia_ids on server
+### duckdb approach, across a range of batch sizes.  Molluscs: 3824 spp
+bench_ids <- spp_vuln_df %>%
+  filter(taxon == 'molluscs' & stressor == 'oa') %>% 
+  .$aphia_id
 
 system.time({
   sdm_a <- get_sdm(aphia_id = bench_ids, scenario = scenario, xrange = xrange)
 })
+#    user  system elapsed 
+# 349.365 365.418  63.953
 
 for(bs in c(100, 250, 500, 1000, 2000)) {
   message('batch_size = ', bs)
