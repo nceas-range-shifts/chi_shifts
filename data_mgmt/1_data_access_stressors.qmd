@@ -37,7 +37,7 @@ Make sure to manually add these to .gitignore!
 ### Download habitat maps
 
 ```{r}
-hab_maps_dir <- here::here('_data_raw/halpern_2025/habitat_maps')
+hab_maps_dir <- here::here('_data/halpern_2025/habitat_maps')
 
 if(dir.exists(hab_maps_dir)) {
   ### check if any tifs; if not, delete and re-download
@@ -52,7 +52,7 @@ if(!dir.exists(hab_maps_dir)) {
   destfile <- here::here('hab_maps.zip')
   download.file(hab_maps_url, destfile, mode = 'wb')
   
-  exdir <- here::here('_data_raw/halpern_2025')
+  exdir <- here::here('_data/halpern_2025')
   unzip(destfile, exdir = exdir)
   file.remove(destfile)
 }
@@ -63,7 +63,7 @@ if(!dir.exists(hab_maps_dir)) {
 These are not rescaled.
 
 ```{r}
-prs_dir <- here::here('_data_raw/halpern_2025/pressures_raw')
+prs_dir <- here::here('_data/halpern_2025/pressures_raw')
 
 if(dir.exists(prs_dir)) {
   ### check if any tifs; if not, delete and re-download
@@ -78,7 +78,7 @@ if(!dir.exists(prs_dir)) {
   destfile <- here::here('prs_raw.zip')
   download.file(prs_url, destfile, mode = 'wb')
   
-  exdir <- here::here('_data_raw/halpern_2025')
+  exdir <- here::here('_data/halpern_2025')
   unzip(destfile, exdir = exdir)
   file.remove(destfile)
 }
@@ -87,7 +87,7 @@ if(!dir.exists(prs_dir)) {
 ### Download rescaled stressor maps
 
 ```{r}
-prs_rescaled_dir <- here::here('_data_raw/halpern_2025/pressures_rescaled')
+prs_rescaled_dir <- here::here('_data/halpern_2025/pressures_rescaled')
 if(dir.exists(prs_rescaled_dir)) {
   ### check if any tifs; if not, delete and re-download
   prs_maps_existing <- list.files(prs_rescaled_dir, pattern = '.tif$')
@@ -101,7 +101,7 @@ if(!dir.exists(prs_rescaled_dir)) {
   destfile <- here::here('prs_raw.zip')
   download.file(prs_url, destfile, mode = 'wb')
   
-  exdir <- here::here('_data_raw/halpern_2025')
+  exdir <- here::here('_data/halpern_2025')
   unzip(destfile, exdir = exdir)
   file.remove(destfile)
 }
@@ -110,7 +110,7 @@ if(!dir.exists(prs_rescaled_dir)) {
 ### Download habitat-based impact maps
 
 ```{r}
-impacts_dir <- here::here('_data_raw/halpern_2025/impacts_by_pressure')
+impacts_dir <- here::here('_data/halpern_2025/impacts_by_pressure')
 if(dir.exists(impacts_dir)) {
   ### check if any tifs; if not, delete and re-download
   impact_maps_existing <- list.files(impacts_dir, pattern = '.tif$')
@@ -124,14 +124,14 @@ if(!dir.exists(impacts_dir)) {
   destfile <- here::here('impacts_by_pressure.zip')
   download.file(impact_url, destfile, mode = 'wb')
   
-  exdir <- here::here('_data_raw/halpern_2025')
+  exdir <- here::here('_data/halpern_2025')
   unzip(destfile, exdir = exdir)
   file.remove(destfile)
 }
 ```
 
 ```{r}
-chi_dir <- here::here('_data_raw/halpern_2025/cumulative_impact')
+chi_dir <- here::here('_data/halpern_2025/cumulative_impact')
 if(dir.exists(chi_dir)) {
   ### check if any tifs; if not, delete and re-download
   chi_maps_existing <- list.files(chi_dir, pattern = '.tif$')
@@ -145,7 +145,7 @@ if(!dir.exists(chi_dir)) {
   destfile <- here::here('cumulative_impact.zip')
   download.file(chi_url, destfile, mode = 'wb')
   
-  exdir <- here::here('_data_raw/halpern_2025')
+  exdir <- here::here('_data/halpern_2025')
   unzip(destfile, exdir = exdir)
   file.remove(destfile)
 }
@@ -154,7 +154,7 @@ if(!dir.exists(chi_dir)) {
 #### remove cruft
 
 ```{r}
-cruft <- list.files(here::here('_data_raw/halpern_2025'), recursive = TRUE, include.dirs = TRUE,
+cruft <- list.files(here::here('_data/halpern_2025'), recursive = TRUE, include.dirs = TRUE,
                       full.names = TRUE, pattern = '^\\.DS|^__MAC|^~')
 
 unlink(cruft, recursive = TRUE)

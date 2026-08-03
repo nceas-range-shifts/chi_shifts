@@ -40,7 +40,6 @@ Once complete for each taxon, then combine and calculate across all taxa.
 #| 
 library(tidyverse)
 library(here)
-library(duckdb) 
 library(arrow)
 library(collapse)
 library(terra)
@@ -58,7 +57,7 @@ available_spp <- list.files(here_aquax('SDM')) %>%
 aquax_meta <- get_aquax_meta() %>%
   filter(aphia_id %in% available_spp)
 
-spp_fe_df <- read_csv(here('_data_raw/ohara_2024/funct_entity_traits/fe_spp_traits.csv')) %>%
+spp_fe_df <- read_csv(here('_data/ohara_2024/funct_entity_traits/fe_spp_traits.csv')) %>%
   rename(len = length_cm, wcol = wcol_pos) %>%
   mutate(len = case_when(len <= 1.5 ~ 'tiny',
                          len <= 7   ~ 'vsm',

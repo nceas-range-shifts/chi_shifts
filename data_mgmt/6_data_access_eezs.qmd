@@ -22,44 +22,19 @@ library(sf)
 library(terra)
 ```
 
-EEZ data saved on Aurora.  UN M49 georegions saved in repo.  Read in shapefile, bind georegions by M49 code, and rasterize out to 
+EEZ data saved on Aurora.  UN M49 georegions saved in repo.  Read in shapefile, rasterize out using un_ter1 and un_sov1 codes (M49 codes).  These can be joined to the georegion dataset.
 
 ```{r}
 base_r <- rast(ext(c(-180, 180, -90, 90)), res = 0.05, crs = 'epsg:4326')
 
 eez_sf <- st_read('/home/shares/usgs-cap-rangeshifts/spatial/World_EEZ_v12_20231025_gpkg/eez_v12.gpkg') |>
   janitor::clean_names() |>
-  ### coerce numeric UN codes to zero-padded 3 digit character
-  mutate(across(starts_with('un_'), .fns = \(x) ifelse(is.na(x), NA, sprintf('%03d', as.integer(x))))) |>
   ### Use territorial code if available; otherwise use sov code
-  mutate(m49_code = ifelse(is.na(un_ter1), un_sov1, un_ter1))
+  mutate(m49_code = ifelse(is.na(un_ter1), un_sov1, un_ter1),
+         m49_code = as.integer(m49_code))
 
-### georegions in semicolon-sep values, so use read_csv2
-unm49_df <- read_csv2(here('_data_raw/eezs/UNSD — Methodology.csv')) |>
-  janitor::clean_names()
+m49_r  <- rasterize(eez_sf, base_r, field = 'm49_code')
 
-eez_georgns <- inner_join(eez_sf, unm49_df, by = c('m49_code')) %>%
-  mutate(intermediate_region_code = ifelse(is.na(intermediate_region_code), 
-                                           sub_region_code, 
-                                           intermediate_region_code)) %>%
-  mutate(across(contains('region_code'), as.integer))
-
-dropped_ter <- anti_join(eez_sf, unm49_df, by = c('m49_code'))
-
-eez_r  <- rasterize(eez_georgns |> mutate(m49_code = as.integer(m49_code)), 
-                    base_r, field = 'm49_code')
-rgn1_r <- rasterize(eez_georgns |> filter(!is.na(region_code)), 
-                    base_r, field = 'region_code')
-rgn2_r <- rasterize(eez_georgns |> filter(!is.na(sub_region_code)), 
-                    base_r, field = 'sub_region_code')
-rgn3_r <- rasterize(eez_georgns |> filter(!is.na(sub_region_code)), 
-                    base_r, field = 'intermediate_region_code')
-
-rgn_stack <- c(eez_r,rgn1_r, rgn2_r, rgn3_r) %>%
-  setNames(c('un_m49_code', 'region_code', 'sub_region_code', 'intermediate_region_code'))
-
-plot(rgn_stack)
-
-writeRaster(rgn_stack, here('_data_raw/eezs/region_codes.tif'), overwrite = TRUE)
+writeRaster(m49_r, here('_data/eezs/un_m49_codes.tif'), overwrite = TRUE)
 ```
 

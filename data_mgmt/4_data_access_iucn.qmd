@@ -34,7 +34,7 @@ source(here('common_fxns.R'))
 Identify assessments for marine species.
 
 ```{r}
-marine_assess_f <- here('_data_raw/iucn_redlist_2026/int/iucn_marine_assessments.csv')
+marine_assess_f <- here('_data/iucn_redlist_2026/int/iucn_marine_assessments.csv')
 
 if(!file.exists(marine_assess_f)) {
   systems <- list_codes(api, 'systems')
@@ -58,7 +58,7 @@ marine_assess_df <- read_csv(marine_assess_f, show_col_types = FALSE)
 Identify comprehensively assessed groups, then pull assessment info for them.
 
 ```{r}
-comp_gp_assess_f <- here('_data_raw/iucn_redlist_2026/int/iucn_comp_group_assessments.csv')
+comp_gp_assess_f <- here('_data/iucn_redlist_2026/int/iucn_comp_group_assessments.csv')
 
 if(!file.exists(comp_gp_assess_f)) {
   comp_gps <- list_codes(api, 'comprehensive_groups')
@@ -123,7 +123,7 @@ table(marine_comp_gp_df$group)
 Using `sis_taxon_id` query scientific names.  While we're here, parse red list category and year assessed.  Chunk first checks to see if the final file is complete; if not, loops over each assessment, pinging API only if temp file is not present, then binds all temp files to create the final file.
 
 ```{r}
-iucn_spp_assessment_f <- here('_data_raw/iucn_redlist_2026/iucn_species_assessments.csv')
+iucn_spp_assessment_f <- here('_data/iucn_redlist_2026/iucn_species_assessments.csv')
 
 if(!file.exists(iucn_spp_assessment_f)) {
   assess_id_vec <- marine_comp_gp_df$assessment_id %>% as.integer()
@@ -252,7 +252,7 @@ check_classification <- function(x) {
   }
 }
 
-pass1_f <- here('_data_raw/iucn_redlist_2026/int/iucn_worms_check_pass1.csv')
+pass1_f <- here('_data/iucn_redlist_2026/int/iucn_worms_check_pass1.csv')
 
 if(!file.exists(pass1_f)) {
   spp_vec <- assess_all_df %>%
@@ -289,7 +289,7 @@ These species appear to be IUCN assessed under a synonym or old name, as IUCN as
 
 ```{r}
 
-aphia_to_sis_file <- here::here('_data_raw/iucn_redlist_2026/int/worms_aphia_to_iucn_sis.csv')
+aphia_to_sis_file <- here::here('_data/iucn_redlist_2026/int/worms_aphia_to_iucn_sis.csv')
 
 if(!file.exists(aphia_to_sis_file)) {
   get_sis <- function(aphia_id) {
@@ -329,7 +329,7 @@ aphia_to_sis_df <- read_csv(aphia_to_sis_file, show_col_types = FALSE)
 This results in a high error rate... let's try synonyms?
 
 ```{r}
-syn_file <- here::here('_data_raw/iucn_redlist_2026/int/worms_synonyms.csv')
+syn_file <- here::here('_data/iucn_redlist_2026/int/worms_synonyms.csv')
 
 if(!file.exists(syn_file)) {
   get_syns <- function(aphia_id) {
@@ -400,7 +400,7 @@ aquax_iucn_manual <- aquax_meta %>%
   mutate(iucn_sciname = NA, sis_taxon_id = NA, iucn_assessment_id = NA) %>%
   distinct()
 
-aquax_iucn_manual_f <- here('_data_raw/iucn_redlist_2026/int/aquax_iucn_manual.csv')
+aquax_iucn_manual_f <- here('_data/iucn_redlist_2026/int/aquax_iucn_manual.csv')
 
 ### DO NOT OVERWRITE!  There is a _protect version just in case
 if(!file.exists(aquax_iucn_manual_f)) write_csv(aquax_iucn_manual, aquax_iucn_manual_f)
@@ -436,7 +436,7 @@ iucn_aphia_df <- iucn_aphia_match1 %>%
   mutate(aquax = ifelse(is.na(sdm), 'Not in AquaX', sdm)) %>%
   select(-sdm)
 
-write_csv(iucn_aphia_df, here('_data_raw/iucn_redlist_2026/iucn_worms_aphia_id_complete.csv'))
+write_csv(iucn_aphia_df, here('_data/iucn_redlist_2026/iucn_worms_aphia_id_complete.csv'))
 ```
 
 ```{r}

@@ -38,7 +38,6 @@ library(tidyverse)
 library(arrow)
 library(collapse)
 library(here)
-library(terra)
 
 # remotes::install_github('bio-oracle/biooracler')
 library(biooracler)
@@ -128,7 +127,7 @@ dataset_id <- c('thetao_ssp245_2020_2100_depthmean',
                 'thetao_baseline_2000_2019_depthmean',
                 'thetao_baseline_2000_2019_depthsurf')
 
-out_fs <- file.path(here('_data_raw/biooracle_2026/ocean_temp'), paste0(dataset_id, '.tif'))
+out_fs <- file.path(here('_data/biooracle_2026/ocean_temp'), paste0(dataset_id, '.tif'))
 out_fs <- str_replace(out_fs, '2020_2100', '2050')
 out_fs <- str_replace(out_fs, '2000_2019', '2010')
 

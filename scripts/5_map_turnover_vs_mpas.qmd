@@ -93,7 +93,7 @@ eez_sf <- st_read('/home/shares/usgs-cap-rangeshifts/spatial/World_EEZ_v12_20231
   mutate(m49_code = ifelse(is.na(un_ter1), un_sov1, un_ter1))
 
 ### georegions in semicolon-sep values, so use read_csv2
-unm49_df <- read_csv2(here('_data_raw/UNSD — Methodology.csv')) |>
+unm49_df <- read_csv2(here('_data/UNSD — Methodology.csv')) |>
   janitor::clean_names()
 
 eez_georgns <- inner_join(eez_sf, unm49_df, by = c('m49_code')) %>%

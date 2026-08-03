@@ -55,7 +55,7 @@ For each stressor, iterate over scenarios to generate a single mapset of pooled 
 vuln_mapfs <- list.files(here('_output/vuln_maps'), pattern = '^all_spp_vuln_.+parquet$', full.names = TRUE)
 str_vulns  <- basename(vuln_mapfs) %>% str_remove_all('all_spp_vuln_|.parquet')
 
-str_mapfs  <- list.files(here('_data_raw/halpern_2025/pressures_rescaled'), pattern = '.tif', full.names = TRUE)
+str_mapfs  <- list.files(here('_data/halpern_2025/pressures_rescaled'), pattern = '.tif', full.names = TRUE)
 str_dists  <- basename(str_mapfs) %>% str_remove_all('_ssp[0-9].+') %>% unique()
 ```
 

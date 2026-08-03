@@ -17,7 +17,7 @@ get_aquax_meta <- function(meta = 'META_02122025.Rdata', sdm = TRUE) {
 
 get_spp_traits <- function() {
   ### run data mgmt scripts first!
-  traits_dir <- here::here('_data_raw/ohara_2024/spp_vuln_framework_traits')
+  traits_dir <- here::here('_data/ohara_2024/spp_vuln_framework_traits')
   junction_df <- data.table::fread(file.path(traits_dir, 'spp_traits_junction.csv'))
   traitval_df <- data.table::fread(file.path(traits_dir, 'spp_traits_trait_val_lookup.csv'))
   taxa_df     <- data.table::fread(file.path(traits_dir, 'spp_traits_taxa_lookup.csv'))
@@ -32,7 +32,7 @@ get_spp_traits <- function() {
 
 get_spp_vuln <- function() {
   ### run data mgmt scripts first!
-  vuln_dir <- here::here('_data_raw/ohara_2024/spp_vuln_framework_scores')
+  vuln_dir <- here::here('_data/ohara_2024/spp_vuln_framework_scores')
   junction_df <- data.table::fread(file.path(vuln_dir, 'spp_vuln_junction.csv'))
   taxa_df     <- data.table::fread(file.path(vuln_dir, 'spp_vuln_taxa_lookup.csv'))
   stressor_df <- data.table::fread(file.path(vuln_dir, 'spp_vuln_stressor_lookup.csv'))
@@ -121,25 +121,25 @@ sample_decomp <- function(df) {
   ### for speed and ease
   
   # df <- tx_tmp_dfs %>% fsubset(x < -170 & scenario == 'rcp45_2050')
-  g <- GRP(df, ~ x + y + scenario)
+  g <- collapse::GRP(df, ~ x + y + scenario)
   
   n     <- df$n
   mn    <- df$mean
   var_i <- df$sd^2
   
   ### broadcast pooled n and pooled mean back to row level (for deviations)
-  pool_n_bc    <- fsum(n, g = g, TRA = "replace")
-  pool_mean_bc <- fsum(n * mn, g = g, TRA = "replace") / pool_n_bc
+  pool_n_bc    <- collapse::fsum(n, g = g, TRA = "replace")
+  pool_mean_bc <- collapse::fsum(n * mn, g = g, TRA = "replace") / pool_n_bc
   deviation    <- mn - pool_mean_bc
   
   SS <- (n - 1) * var_i
   SS[n == 1] <- 0
   
   ### group-level pooled n / mean / var / sd
-  pool_n    <- fsum(n, g = g)
-  pool_mean <- fsum(n * mn, g = g) / pool_n
-  pool_dev_sum <- fsum(n * deviation^2, g = g)
-  pool_SS   <- fsum(SS, g = g) + pool_dev_sum
+  pool_n    <- collapse::fsum(n, g = g)
+  pool_mean <- collapse::fsum(n * mn, g = g) / pool_n
+  pool_dev_sum <- collapse::fsum(n * deviation^2, g = g)
+  pool_SS   <- collapse::fsum(SS, g = g) + pool_dev_sum
   pool_var  <- pool_SS / (pool_n - 1)
   pool_sd   <- sqrt(pool_var)
   
@@ -154,3 +154,4 @@ sample_decomp <- function(df) {
   
   return(summary_df)
 }
+

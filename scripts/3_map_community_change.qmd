@@ -37,7 +37,6 @@ Once complete for each taxon, then combine and calculate across all taxa.
 #| 
 library(tidyverse)
 library(here)
-library(duckdb) 
 library(arrow)
 library(collapse)
 library(terra)
