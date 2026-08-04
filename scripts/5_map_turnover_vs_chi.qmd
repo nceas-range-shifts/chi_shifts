@@ -1,0 +1,279 @@
+---
+title: Map species and functional change against human impacts
+author: "Casey O'Hara"
+format:
+  html:
+    embed-resources: true
+execute:
+    warning: false
+---
+
+## Summary
+
+Compare turnover metrics against MPA coverage
+
+## Data
+
+* AquaX species distribution models from Reygondeau et al. (2026). AquaX: An enhanced and revised AquaMaps framework to model marine species distributions and biodiversity. PLOS ONE, 21(2), e0335823. https://doi.org/10.1371/journal.pone.0335823
+* Function entities from O'Hara et al. (2024). Cumulative human impacts on global marine fauna highlight risk to biological and functional diversity. PLOS ONE, 19(9), e0309788. https://doi.org/10.1371/journal.pone.0309788
+* Impacts from Halpern, B. S., Frazier, M., O’Hara, C. C., Vargas-Fonseca, O. A., & Lombard, A. T. (2025). Cumulative impacts to global marine ecosystems projected to more than double by midcentury. Science, 0(0), eadv2906. https://doi.org/10.1126/science.adv2906
+
+## Methods
+
+* Reproject impacts to same resolution as spp and FE turnover maps
+* Rasterize the SPP and FE turnover maps
+* Ideas for potential zonal comparison:
+    * CHI categories/quartiles?
+    * Turnover quartiles?
+* Other ideas for comparison
+    * Regression?
+    * PCA?
+
+```{r}
+library(tidyverse)
+library(here)
+library(terra)
+library(sf)
+library(arrow)
+library(collapse)
+library(biscale)  ### for bivariate legend
+library(cowplot)
+```
+
+### Reproject impacts
+
+Let's rearrange impacts into x, y, scenarios and save out as .parquet
+
+```{r}
+rast_to_df <- function(x, y = base_r) {
+  ### x is raster to transform, y is target
+  x2 <- project(x, y) |> round(3)
+  x_df <- as.data.frame(x2, xy = TRUE)
+  return(x_df)
+}
+
+base_r <- rast(ext(-180, 180, -90, 90),
+               resolution = 0.05,
+               crs = 'epsg:4326')
+```
+
+```{r}
+impact_fs_moll <- data.frame(
+    f = list.files(here('_data/halpern_2025/impacts_by_pressure'), 
+                  pattern = '.tif', full.names = TRUE)) %>%
+  mutate(stressor = sub('_ssp.+', '', basename(f)),
+         scenario = gsub('[a-z-]+_|.tif', '', basename(f)),
+         scenario = sub('medium-term', '2050', scenario)) %>%
+  filter(scenario != 'ssp585_current')
+
+out_fstem <- here('_data/halpern_2025/impacts_by_pressure_reprojected/%s.parquet')
+
+for(str in unique(impact_fs_moll$stressor)) {
+  f_out <- sprintf(out_fstem, str)
+  if(file.exists(f_out)) next()
+
+  ### str <- impact_fs_moll$stressor[1]
+  str_df <- impact_fs_moll |> filter(stressor == str) 
+  file_vec <- str_df |> pull(f)
+  str_rasts <- rast(file_vec) |>
+    setNames(str_df$scenario)
+  str_rasts_df <- rast_to_df(str_rasts)
+  write_parquet(str_rasts_df, f_out)
+}
+```
+
+```{r}
+impact_fs <- list.files(dirname(out_fstem), 
+                        pattern = '.parquet$', full.names = TRUE)
+### focus on potentially manageable stressors?
+impact_fs <- impact_fs[grepl('coast|fish|pollution', basename(impact_fs))]
+
+impact_df <- arrow::open_dataset(impact_fs, format = 'parquet') |>
+  mutate(f = add_filename()) |>
+  collect() |>
+  fmutate(var = sub('.parquet', '', basename(f))) |>
+  ### drop current - we are gonna compare future turnover to future impacts
+  select(x, y, var, rcp45_2050 = ssp245_2050, rcp85_2050 = ssp585_2050)
+
+```
+
+### Read in and rasterize turnover metrics
+
+Invert SSI rasters to indicate turnover (high turnover = 1, low = 0)
+```{r}
+spp_ssi_r <- read_parquet(here('_output/spp_turnover_maps/all_spp_turnover.parquet')) %>%
+  collapse::fsubset(stat == 'ssi') %>%
+  select(-stat) %>%
+  rast(type = 'xyz', extent = ext(base_r))
+fe_ssi_r  <- read_parquet(here('_output/fe_turnover_maps/all_fe_turnover.parquet')) %>%
+  collapse::fsubset(stat == 'ssi') %>%
+  select(-stat) %>%
+  rast(type = 'xyz', extent = ext(base_r))
+
+spp_turn_r <- 1 - spp_ssi_r; fe_turn_r <- 1 - fe_ssi_r
+plot(spp_turn_r); plot(fe_turn_r)
+```
+
+### Rasterize impacts
+
+Here, focusing on the cumulative manageable impacts.
+
+```{r}
+impact_r <- impact_df %>%
+  fgroup_by(x, y) %>%
+  fsummarize(across(.cols = c(rcp45_2050, rcp85_2050), .fns = fsum, na.rm = TRUE)) %>%
+  rast(type = 'xyz', extent = ext(base_r)) %>%
+  mask(spp_turn_r)
+
+plot(impact_r)
+```
+
+### Examine impacts vs turnover
+
+Here let's do a bivariate plot to compare areas of high/low predicted impact to high/low projected turnover.
+
+```{r process to quartiles}
+impact_qtile <- fe_turn_qtile <- spp_turn_qtile <- spp_turn_r ### initialize three new maps
+
+### Set breaks for impacts
+impact_thresholds <- quantile(values(impact_r[[1]]), probs = seq(0, 1, 0.25), na.rm = TRUE, names = FALSE)
+# [1] 0.000 0.081 0.096 0.144 1.550
+### NOTE: between RCP4.5 and 8.5, the 25% and 50% remain the same, but 75% and 100% increase
+values(impact_qtile) <- data.table::fcase(values(impact_r) < impact_thresholds[2], 1L,
+                                          values(impact_r) < impact_thresholds[3], 2L,
+                                          values(impact_r) < impact_thresholds[4], 3L,
+                                          !is.na(values(impact_r)), 4L)
+
+### Set breaks for turnover
+### Note: since turnover is a physical thing, just set as .25, .5, .75 and call it a day.
+### Set zero turnover to be category 1
+values(fe_turn_qtile)  <- ceiling(values(fe_turn_r * 4))
+fe_turn_qtile[fe_turn_qtile == 0] <- 1
+values(spp_turn_qtile) <- ceiling(values(spp_turn_r * 4))
+spp_turn_qtile[spp_turn_qtile == 0] <- 1
+
+fe_turn_df <- as.data.frame(fe_turn_qtile, xy = TRUE) %>%
+  setNames(c('x', 'y', 'fe_turn_rcp45', 'fe_turn_rcp85'))
+spp_turn_df <- as.data.frame(spp_turn_qtile, xy = TRUE) %>%
+  setNames(c('x', 'y', 'spp_turn_rcp45', 'spp_turn_rcp85'))
+impact_df <- as.data.frame(impact_qtile, xy = TRUE) %>%
+  setNames(c('x', 'y', 'impact_rcp45', 'impact_rcp85'))
+
+fe_turn_impact_df <- collapse::join(fe_turn_df, impact_df, 
+  how = 'left', on = c('x', 'y')) %>%
+  mutate(bi_class_rcp45 = paste(fe_turn_rcp45, impact_rcp45, sep = '-'),
+         bi_class_rcp85 = paste(fe_turn_rcp85, impact_rcp85, sep = '-'))
+spp_turn_impact_df <- collapse::join(spp_turn_df, impact_df, 
+  how = 'left', on = c('x', 'y')) %>%
+  mutate(bi_class_rcp45 = paste(spp_turn_rcp45, impact_rcp45, sep = '-'),
+         bi_class_rcp85 = paste(spp_turn_rcp85, impact_rcp85, sep = '-'))
+```
+
+```{r}
+land_sf <- rnaturalearth::ne_download(scale = 110, type = 'land', category = 'physical')
+```
+```{r build palette}
+
+map_pal_raw <- bi_pal(pal = 'GrPink2', dim = 4, preview = FALSE)
+  
+map_pal_mtx      <- matrix(map_pal_raw, nrow = 4, ncol = 4)
+map_pal_mtx[3, ] <- colorspace::lighten(map_pal_mtx[3, ], .1)
+map_pal_mtx[2, ] <- colorspace::lighten(map_pal_mtx[2, ], .2)
+map_pal_mtx[1, ] <- colorspace::lighten(map_pal_mtx[1, ], .3)
+map_pal_mtx[ , 3] <- colorspace::lighten(map_pal_mtx[ , 3], .1)
+map_pal_mtx[ , 2] <- colorspace::lighten(map_pal_mtx[ , 2], .2)
+map_pal_mtx[ , 1] <- colorspace::lighten(map_pal_mtx[ , 1], .3)
+map_pal_mtx[1, 1] <- '#ffffee'
+
+map_pal <- as.vector(map_pal_mtx) %>% setNames(names(map_pal_raw))
+
+panel_lgd_raw <- bi_legend(pal = map_pal, dim = 4,
+                           x = 'FE turn',
+                           y = 'CHI')
+panel_lgd_raw
+```
+
+#### FE turnover vs impacts, RCP4.5
+```{r fe_45}
+panel_fe_45 <- ggplot() +
+  # ### background for NA cells:
+  # geom_raster(data = ocean_df, aes(x, y), fill = 'grey85') +
+  ### plot data:
+  geom_raster(data = fe_turn_impact_df, aes(x, y, fill = bi_class_rcp45), show.legend = FALSE) +
+  bi_scale_fill(pal = map_pal, dim = 4) +
+  ### continents:
+  geom_sf(data = land_sf,
+          fill = 'grey96', color = 'grey30', 
+          size = .1) +
+  scale_x_continuous(expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0)) +
+  theme_void() +
+  theme(axis.text = element_blank(), 
+        axis.title = element_blank())
+
+panel_fe_45
+```
+
+#### FE turnover vs impacts, RCP8.5
+```{r fe_85}
+panel_fe_85 <- ggplot() +
+  # ### background for NA cells:
+  # geom_raster(data = ocean_df, aes(x, y), fill = 'grey85') +
+  ### plot data:
+  geom_raster(data = fe_turn_impact_df, aes(x, y, fill = bi_class_rcp85), show.legend = FALSE) +
+  bi_scale_fill(pal = map_pal, dim = 4) +
+  ### continents:
+  geom_sf(data = land_sf,
+          fill = 'grey96', color = 'grey30', 
+          size = .1) +
+  scale_x_continuous(expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0)) +
+  theme_void() +
+  theme(axis.text = element_blank(), 
+        axis.title = element_blank())
+
+panel_fe_85
+```
+
+#### Spp turnover vs impacts, RCP4.5
+```{r spp_45}
+panel_spp_45 <- ggplot() +
+  # ### background for NA cells:
+  # geom_raster(data = ocean_df, aes(x, y), fill = 'grey85') +
+  ### plot data:
+  geom_raster(data = spp_turn_impact_df, aes(x, y, fill = bi_class_rcp45), show.legend = FALSE) +
+  bi_scale_fill(pal = map_pal, dim = 4) +
+  ### continents:
+  geom_sf(data = land_sf,
+          fill = 'grey96', color = 'grey30', 
+          size = .1) +
+  scale_x_continuous(expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0)) +
+  theme_void() +
+  theme(axis.text = element_blank(), 
+        axis.title = element_blank())
+
+panel_spp_45
+```
+
+#### Spp turnover vs impacts, RCP8.5
+```{r spp_85}
+panel_spp_85 <- ggplot() +
+  # ### background for NA cells:
+  # geom_raster(data = ocean_df, aes(x, y), fill = 'grey85') +
+  ### plot data:
+  geom_raster(data = spp_turn_impact_df, aes(x, y, fill = bi_class_rcp85), show.legend = FALSE) +
+  bi_scale_fill(pal = map_pal, dim = 4) +
+  ### continents:
+  geom_sf(data = land_sf,
+          fill = 'grey96', color = 'grey30', 
+          size = .1) +
+  scale_x_continuous(expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0)) +
+  theme_void() +
+  theme(axis.text = element_blank(), 
+        axis.title = element_blank())
+
+panel_spp_85
+```
+

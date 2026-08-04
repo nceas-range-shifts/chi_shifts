@@ -82,8 +82,6 @@ fe_turnover_mpa_df <- zonal(fe_turnover_r, mpa_r_all, fun = 'mean', na.rm = TRUE
 
 ### Examine by Georegion
 
-
-
 ```{r}
 eez_sf <- st_read('/home/shares/usgs-cap-rangeshifts/spatial/World_EEZ_v12_20231025_gpkg/eez_v12.gpkg') |>
   janitor::clean_names() |>
