@@ -240,7 +240,7 @@ for(f_e in fe_vec) {
 
 ```{r}
 
-all_fe_turnover_f <- here('_output/fe_turnover_maps/all_fe_turnover.parquet')
+all_fe_turnover_f <- here('_output/fe_turnover_maps/all_fe_community_change.parquet')
 
 if(!file.exists(all_fe_turnover_f)) {
   fe_map_fs <- list.files(here('_output/fe_turnover_maps/turnover_by_fe'), 
@@ -332,166 +332,63 @@ if(!file.exists(all_fe_turnover_f)) {
 }
 ```
 
-### Maps
+### Write out raster outputs
 
-:::panel-tabset
-#### Persistence 
+Reproject lat/long into Behrmann equal area projections for MS figure displays.  For turnover and functional richness, save out the results as two-layer raster (one for each future scenario).
 
-Number of spp in both current period and future
-
-```{r persistence map}
-#| fig-height: 3
-
-all_fe_turnover <- read_parquet(all_fe_turnover_f)
-
-
-all_fe_turnover %>%
-  fsubset(stat == 'persistence') %>%
-  select(-stat) %>%
-  rast() %>%
-  plot()
+```{r}
+base_rast <- rast(ext(-180, 180, -90, 90),
+                  resolution = 0.05,
+                  crs = 'epsg:4326')
+behr_rast <- base_rast %>%
+  project(y = '+proj=cea +lat_ts=30 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs', 
+          res = 5000)
 ```
 
-#### Colonization 
+::: panel-tabset
 
-Number of spp in future period but NOT in current
+#### Turnover raster
 
-```{r colonization map}
-#| fig-height: 3
+```{r turnover rasters}
+all_fe_turnover_df <- read_parquet(all_fe_turnover_f) 
 
-all_fe_turnover %>%
-  fsubset(stat == 'colonization') %>%
-  select(-stat) %>%
-  rast() %>%
-  plot()
+turnover_out_f <- here('_output/fe_turnover_maps/all_fe_turnover.tif')
+
+if(!file.exists(turnover_out_f)) {
+
+  ssi_r <- all_fe_turnover_df %>%
+    fsubset(stat == 'ssi') %>%
+    select(-stat) %>%
+    rast(crs = crs(base_rast), ext = ext(base_rast)) %>%
+    project(behr_rast, res = 5000)
+  turnover_r <- 1 - ssi_r
+  writeRaster(turnover_r, turnover_out_f)
+}
+
+plot(rast(turnover_out_f), main = 'spp turnover')
 ```
-
-#### Extirpation 
-
-Number of spp in current period but NOT future
-
-```{r extirpation map}
-#| fig-height: 3
-
-all_fe_turnover %>%
-  fsubset(stat == 'extirpation') %>%
-  select(-stat) %>%
-  rast() %>%
-  plot()
-```
-
-:::
 
 #### FE Richness 
 
-```{r FE community change}
-#| fig-height: 6
-#| fig-width: 6
+```{r FE richness rasters}
+fe_rich_out_f <- here('_output/fe_turnover_maps/all_fe_richness.tif')
 
-community_change_df <- all_fe_turnover %>%
-  pivot_longer(cols = c('rcp45_2050', 'rcp85_2050'), names_to = 'scenario', values_to = 'value') %>%
-  pivot_wider(names_from = stat, values_from = value) %>%
-  mutate(fe_r_current = persistence + extirpation,
-         fe_r_change  = colonization - extirpation) %>%
-  select(x, y, scenario, fe_r_current, fe_r_change, ssi) %>%
-  mutate(turnover = 1 - ssi)
+if(!file.exists(fe_rich_out_f)) {
+  nfe_df <- all_fe_turnover_df %>%
+    pivot_longer(cols = c('rcp45_2050', 'rcp85_2050'), names_to = 'scenario', values_to = 'value') %>%
+    pivot_wider(names_from = stat, values_from = value) %>%
+    fmutate(fe_r_current = persistence + extirpation,
+            fe_r_future  = colonization + persistence) %>%
+    select(x, y, scenario, fe_r_current, fe_r_future) %>%
+    pivot_wider(names_from = scenario, values_from = fe_r_future)
 
-out_f <- here('ms_figs', 'x_fe_richness.png')
+  nfe_r <- nfe_df %>%
+    rast(crs = crs(base_rast), ext = ext(base_rast)) %>%
+    project(behr_rast, res = 5000)
 
-if(!file.exists(out_f)) {
-  fe_r_now <- ggplot(community_change_df %>% 
-                        filter(scenario == 'rcp45_2050'), 
-                      aes(x, y, fill = fe_r_current)) +
-    geom_raster() +
-    scale_fill_viridis_c() +
-    coord_fixed() +
-    scale_x_continuous(expand = c(0, 0)) +
-    scale_y_continuous(expand = c(0, 0)) +
-    labs(fill = 'N FE\n(current)') +
-    theme_minimal() +
-    theme(axis.text = element_blank(),
-          axis.title = element_blank(),
-          panel.background = element_rect(fill = 'white'))
-
-  div_pal <- hcl.colors(n = 3, pal = 'Red-Green')
-  fe_change <- ggplot(community_change_df, 
-                            aes(x, y, fill = log10((fe_r_current + fe_r_change)/fe_r_current))) +
-    geom_raster() +
-    scale_fill_gradient2(low = div_pal[1], mid = div_pal[2], high = div_pal[3], midpoint = 0) +
-    coord_fixed() +
-    scale_x_continuous(expand = c(0, 0)) +
-    scale_y_continuous(expand = c(0, 0)) +
-    facet_wrap(~scenario, nrow = 1) +
-    labs(fill = 'ΔN FE\n(% change)') +
-    theme_minimal() +
-    theme(axis.text = element_blank(),
-          axis.title = element_blank(),
-          panel.background = element_rect(fill = 'white'))
-
-
-  p <- ggdraw() +
-    draw_plot(fe_r_now, x = 0, y = .38, width = 1, height = .62) +
-    draw_plot(fe_change, x = 0, y = 0, width = 1, height = .38)
-
-  ggsave(out_f, height = 6, width = 8, dpi = 300)
+  writeRaster(nfe_r, fe_rich_out_f)
 }
-  
-knitr::include_graphics(out_f)
-```
+plot(rast(fe_rich_out_f), main = 'fe richness')
 
-
-#### Turnover 
-
-Sorensen similarity index: 1 = identical community, 0 = complete turnover - flip this so 1 = complete turnover, 0 = no turnover
-
-```{r turnover}
-#| fig-height: 6
-#| fig-width: 6
-out_f <- here('ms_figs', 'x_fe_turnover.png')
-
-if(!file.exists(out_f)) {
-  p <- ggplot(community_change_df, aes(x, y, fill = turnover)) +
-    geom_raster() +
-    scale_fill_viridis_c() +
-    scale_x_continuous(expand = c(0, 0)) +
-    scale_y_continuous(expand = c(0, 0)) +
-    coord_fixed() +
-    facet_wrap(~ scenario, ncol = 1, strip.position = 'left') +
-    labs(fill = 'Turnover\n(1-ssi)') +
-    theme_minimal() +
-    theme(axis.text = element_blank(),
-          axis.title = element_blank(),
-          panel.background = element_rect(fill = 'white'))
-
-  ggsave(out_f, height = 8, width = 8, dpi = 300)
-}
-knitr::include_graphics(out_f)
-```
-
-
-### FE SSI vs spp SSI
-
-```{r}
-spp_ssi <- read_parquet(here('_output/spp_turnover_maps/all_spp_turnover.parquet')) %>%
-  filter(stat == 'ssi') %>%
-  select(x, y, ssi_rcp45_spp = rcp45_2050)
-fe_ssi <- all_fe_turnover %>%
-  fsubset(stat == 'ssi') %>%
-  select(x, y, ssi_rcp45_fe = rcp45_2050)
-fe_nspp <- read_parquet(here('_output/fe_turnover_maps/fe_nspp_maps.parquet'))
-
-set.seed(12345)
-sample_df <- spp_ssi %>%
-  slice_sample(n = 1e5) %>%
-  join(fe_ssi, how = 'left') %>%
-  join(fe_nspp, how = 'left') %>%
-  arrange(nspp_rcp45_2050)
-
-ggplot(sample_df, aes(x = ssi_rcp45_spp, y = ssi_rcp45_fe, color = log10(nspp_rcp45_2050))) +
-  geom_point(alpha = .2) +
-  geom_abline(slope = 1, intercept = 0, color = 'red') +
-  scale_color_viridis_c(breaks = 0:4, labels = c('1', '10', '100', '1000', '10000')) +
-  theme_minimal() +
-  labs(x = 'SSI (spp, rcp4.5)', y = 'SSI (fe, rcp4.5)', color = 'N_spp (rcp4.5, 2050)')
 ```
 
