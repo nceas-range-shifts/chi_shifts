@@ -105,20 +105,10 @@ table(spp_fe_df$wcol)
 
 For each FE, create a composition map.  "Map" is a parquet file containing columns:
 
-* x, y (numeric): x/y in degrees for a pixel
+* cell_id (integer) - was x, y (numeric): x/y in degrees for a pixel
 * stat: the statistic described in this observation: n, persistence, colonization, extirpation, SSI
 * rcp45_2050: projected value of this stat for this pixel for this scenario
 * rcp85_2050: projected value of this stat for this pixel for this scenario
-
-```{r}
-### set the number of vertical slices by degrees
-x_px     <- 360 / 0.05       ### number of pixels in x axis
-xslice_w <- 5                ### slice width in degrees
-xslice_n <- 360 / xslice_w   ### number of vertical slices
-if(x_px %% xslice_n != 0) stop('Choose a slice width that divides evenly into 360!')
-
-```
-
 
 ```{r iterate over FEs}
 fe_vec <- spp_fe_df$fe %>% unique()
@@ -145,20 +135,19 @@ for(f_e in fe_vec) {
   tmp_out_fstem <- here::here('tmp/fe_turnover/fe_turnover_%s_%s.parquet')
   if(!dir.exists(dirname(tmp_out_fstem))) dir.create(dirname(tmp_out_fstem))
   
-  ### set the number of vertical slices by degrees
-  x_px     <- 360 / 0.05                  ### number of pixels in x axis
-  xslice_n <- 360 / xslice_w              ### number of vertical slices
-  if(x_px %% xslice_n != 0) stop('Choose a slice width that divides evenly into 360!')
+  ### set the number of row slices by cell_id: because cell_id scans rowwise,
+  ### row 1 is 1-7200, 2 is 7201-14400, etc.
+  yslice_w <- 5               ### slice width in degrees
+  yslice_n <- 180 / yslice_w  ### number of vertical slices
 
-  slice_vec <- 1:xslice_n
+  slice_vec <- 1:yslice_n
 
   for(i in slice_vec) {
-    ### i <- 1
-    ### generate xrange for this iteration.  NOTE: this works
-    ### because actual x values fall on pixel centers, not edges
-    xrange <- -180 + c((i-1), i) * xslice_w
+    ### i <- 2
+    ### generate cellrange for this slice of y rows
+    cellrange <- calc_cellrange(i, yslice_w)
     
-    tmp_out_f <- sprintf(tmp_out_fstem, f_e, paste0(xrange, collapse = '_'))
+    tmp_out_f <- sprintf(tmp_out_fstem, f_e, paste0(cellrange, collapse = '_'))
     if(file.exists(tmp_out_f)) next()
     
     ########################################
@@ -166,7 +155,7 @@ for(f_e in fe_vec) {
     ########################################
     sdm_df <- get_sdm(aphia_id = fe_df$aphia_id %>% unique(), 
                       scenario = scenario,
-                      xrange = xrange,
+                      cellrange = cellrange,
                       apply_thresh = TRUE)
     if(nrow(sdm_df) == 0) {
       ### no spp here, save placeholder and move on!
@@ -190,7 +179,7 @@ for(f_e in fe_vec) {
         X = seq_along(reclass_vec),
         FUN = function(i) {
           sdm_reclass %>%
-            fgroup_by(x, y) %>%
+            fgroup_by(cell_id) %>%
             fsummarize(across(all_of(future_scens), \(z) sum(z == i)))
         }) %>% 
       setNames(reclass_vec) %>%
@@ -198,17 +187,17 @@ for(f_e in fe_vec) {
       fmutate(stat = as.character(stat))
     
     ### Calculate SSI from persistence/extirp/colonization
-    sdm_ssi_df <- parallel::mclapply(mc.cores = length(future_scens),
+    sdm_ssi_df <- lapply(
         X = future_scens,
         FUN = function(sc) {
           ### sc <- future_scens[1]
           ssi_df <- sdm_summary %>%
-            select(x, y, stat, scenario = all_of(sc)) %>%
+            select(cell_id, stat, scenario = all_of(sc)) %>%
             pivot_wider(names_from = 'stat', values_from = 'scenario') %>%
             fmutate(ssi = 2 * persistence / (2 * persistence + extirpation + colonization)) %>%
-            select(x, y, !!sc := ssi)
+            select(cell_id, !!sc := ssi)
         }) %>%
-      purrr::reduce(.f = full_join, by = c('x', 'y')) %>%
+      purrr::reduce(.f = full_join, by = c('cell_id')) %>%
       fmutate(stat = 'ssi')
       
     ### write out to tmp file
@@ -222,10 +211,9 @@ for(f_e in fe_vec) {
 
   tmp_fs <- list.files(dirname(tmp_out_fstem), pattern = f_e, full.names = TRUE)
   
-  complete_fe_turnover_df <- parallel::mclapply(
+  complete_fe_turnover_df <- lapply(
     X = tmp_fs,
     FUN = arrow::read_parquet,
-    mc.cores = 36
   ) %>%
     bind_rows()
 
@@ -248,12 +236,11 @@ if(!file.exists(all_fe_turnover_f)) {
   
   fe_vec <- basename(fe_map_fs) %>% str_remove_all('fe_turnover_|.parquet')
   
-  fe_maps <- parallel::mclapply(mc.cores = min(length(fe_map_fs), 64),
-                                X = fe_map_fs, 
-                                FUN = \(z) {
-                                  read_parquet(z) %>%
-                                    pivot_wider(names_from = stat, values_from = c(rcp45_2050, rcp85_2050))
-                                  }) %>%
+  fe_maps <- lapply(X = fe_map_fs, 
+                    FUN = \(z) {
+                      read_parquet(z) %>%
+                        pivot_wider(names_from = stat, values_from = c(rcp45_2050, rcp85_2050))
+                      }) %>%
     setNames(fe_vec) %>%
     rowbind(idcol = 'fe')
   
@@ -263,7 +250,7 @@ if(!file.exists(all_fe_turnover_f)) {
   fe_nspp_map_f <- here('_output/fe_turnover_maps/fe_nspp_maps.parquet')
   if(!file.exists(fe_nspp_map_f)) {
     nspp_maps <- fe_maps %>%
-      fgroup_by(x, y) %>%
+      fgroup_by(cell_id) %>%
       fsummarize(nspp_current = sum(rcp45_2050_extirpation + rcp45_2050_persistence),
                  nspp_rcp45_2050 = sum(rcp45_2050_persistence + rcp45_2050_colonization),
                  nspp_rcp85_2050 = sum(rcp85_2050_persistence + rcp85_2050_colonization))
@@ -286,7 +273,7 @@ if(!file.exists(all_fe_turnover_f)) {
     fmutate(exists_current    = (rcp45_2050_extirpation | rcp45_2050_persistence),
             exists_rcp45_2050 = (rcp45_2050_persistence | rcp45_2050_colonization),
             exists_rcp85_2050 = (rcp85_2050_persistence | rcp85_2050_colonization)) %>%
-    select(x, y, fe, starts_with('exists'))
+    select(cell_id, fe, starts_with('exists'))
   fe_status <- fe_exists %>%
     fmutate(rcp45_2050_extirpation = exists_current & !exists_rcp45_2050,
             rcp45_2050_colonization = !exists_current & exists_rcp45_2050,
@@ -298,7 +285,7 @@ if(!file.exists(all_fe_turnover_f)) {
   ### Then sum up the three stats across the scenarios acrpss all FEs
   fe_turnover <- fe_status %>%
     select(-starts_with('exists')) %>%
-    fgroup_by(x, y) %>%
+    fgroup_by(cell_id) %>%
     fsummarize(across(-fe, .fns = \(x) sum(as.numeric(x))))
   
   ### Then calc SSI for each scenario
@@ -307,13 +294,13 @@ if(!file.exists(all_fe_turnover_f)) {
               (2 * rcp45_2050_persistence + rcp45_2050_extirpation + rcp45_2050_colonization),
             rcp85_2050 = 2 * rcp85_2050_persistence / 
               (2 * rcp85_2050_persistence + rcp85_2050_extirpation + rcp85_2050_colonization)) %>%
-    select(x, y, rcp45_2050, rcp85_2050) %>%
+    select(cell_id, rcp45_2050, rcp85_2050) %>%
     fmutate(stat = 'ssi')
   
   all_fe_turnover <- fe_turnover %>%
     select(-contains('ssi')) %>%
     setNames(str_replace(names(.), '2050_', '2050X')) %>%
-    pivot_longer(cols = -c(x, y), names_to = c('.value', 'stat'), names_sep = 'X') %>%
+    pivot_longer(cols = -c(cell_id), names_to = c('.value', 'stat'), names_sep = 'X') %>%
     rowbind(fe_ssi_df)
 
   write_parquet(all_fe_turnover, all_fe_turnover_f)
@@ -321,7 +308,7 @@ if(!file.exists(all_fe_turnover_f)) {
   fe_nfe_map_f <- here('_output/fe_turnover_maps/fe_nfe_maps.parquet')
   if(!file.exists(fe_nfe_map_f)) {
     nfe_maps <- fe_exists %>%
-      fgroup_by(x, y) %>%
+      fgroup_by(cell_id) %>%
       fsummarize(nfe_current = sum(exists_current),
                  nfe_rcp45_2050 = sum(exists_rcp45_2050),
                  nfe_rcp85_2050 = sum(exists_rcp85_2050))
@@ -359,6 +346,7 @@ if(!file.exists(turnover_out_f)) {
   ssi_r <- all_fe_turnover_df %>%
     fsubset(stat == 'ssi') %>%
     select(-stat) %>%
+    cell_id_to_xy(drop = TRUE) %>%
     rast(crs = crs(base_rast), ext = ext(base_rast)) %>%
     project(behr_rast, res = 5000)
   turnover_r <- 1 - ssi_r
@@ -379,10 +367,11 @@ if(!file.exists(fe_rich_out_f)) {
     pivot_wider(names_from = stat, values_from = value) %>%
     fmutate(fe_r_current = persistence + extirpation,
             fe_r_future  = colonization + persistence) %>%
-    select(x, y, scenario, fe_r_current, fe_r_future) %>%
+    select(cell_id, scenario, fe_r_current, fe_r_future) %>%
     pivot_wider(names_from = scenario, values_from = fe_r_future)
 
   nfe_r <- nfe_df %>%
+    cell_id_to_xy(drop = TRUE) %>%
     rast(crs = crs(base_rast), ext = ext(base_rast)) %>%
     project(behr_rast, res = 5000)
 

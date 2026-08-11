@@ -43,17 +43,28 @@ get_spp_vuln <- function() {
   return(df)
 }
 
+calc_cellrange <- function(i, yslice_w, res = 0.05) {
+  ### set the number of row slices by cell_id: because cell_id scans rowwise,
+  ### row 1 is 1-7200, 2 is 7201-14400, etc.
+  x_px     <- 360 / res                  ### number of pixels in x axis
+  px_per_deg <- 1 / res                  ### number of pixels per deg
+
+  yrange_deg <- 90 - c((i-1), i) * yslice_w
+  yrange_row  <- (90 - yrange_deg) * px_per_deg + c(1, 0) ### pad first by 1
+  cellrange <- c(min(yrange_row - 1) * x_px + 1, max(yrange_row) * x_px)
+}
+
 get_sdm <- function(aphia_id,
                     scenario = c('Current',
                                   'RCP26_2050', 'RCP26_2100',
                                   'RCP45_2050', 'RCP45_2100',
                                   'RCP85_2050', 'RCP85_2100'),
-                    xrange = NULL,       ### one or two numeric values
+                    cellrange = NULL,    ### one or two numeric values for cell_id
                     apply_thresh = TRUE,
                     batch_size = 1000,   ### files per duckdb query - tune on server
                     threads = 60,        ### cap duckdb worker threads - shared server!
                     memory_limit = '300GB') { ### cap duckdb memory - shared server!
-  filestem <- here_aquax('SDM/FINAL_EMSDM_EMMEAN_SP_%s.parquet')
+  filestem <- here_aquax('sdm_by_id/FINAL_EMSDM_EMMEAN_SP_%s.parquet')
   all_files <- sprintf(filestem, aphia_id)
 
   batches <- split(all_files, ceiling(seq_along(all_files) / batch_size))
@@ -68,6 +79,7 @@ get_sdm <- function(aphia_id,
   on.exit(duckdb::dbDisconnect(con, shutdown = TRUE), add = TRUE)
 
   process_batch <- function(files) {
+    ### files <- batches[[3]]
     file_list_sql <- paste0("[", paste0("'", files, "'", collapse = ", "), "]")
 
     if(apply_thresh) {
@@ -86,7 +98,7 @@ get_sdm <- function(aphia_id,
       select_cols <- paste(scen_exprs, collapse = ', ')
       keep_clause <- paste0("(", paste(scenario, ">= cutoff", collapse = ' OR '), ")")
       query_str <- paste0(
-        "SELECT ROUND(x, 3) AS x, ROUND(y, 3) AS y, cutoff, ", select_cols, ", ",
+        "SELECT cell_id, cutoff, ", select_cols, ", ",
         "CAST(regexp_extract(filename, '_SP_([0-9]+)\\.parquet$', 1) AS INTEGER) AS aphia_id ",
         "FROM read_parquet(", file_list_sql, ", filename=true, union_by_name=true) ",
         "WHERE ", keep_clause
@@ -94,15 +106,16 @@ get_sdm <- function(aphia_id,
     } else {
       select_cols <- paste(scenario, collapse = ', ')
       query_str <- paste0(
-        "SELECT x, y, cutoff, ", select_cols, ", ",
+        "SELECT cell_id, cutoff, ", select_cols, ", ",
         "CAST(regexp_extract(filename, '_SP_([0-9]+)\\.parquet$', 1) AS INTEGER) AS aphia_id ",
         "FROM read_parquet(", file_list_sql, ", filename=true, union_by_name=true)"
       )
     }
-    if(!is.null(xrange)) {
+    if(!is.null(cellrange)) {
+
       query_str <- paste0(
         query_str,
-        if(apply_thresh) " AND x <= " else " WHERE x <= ", max(xrange), " AND x >= ", min(xrange)
+        if(apply_thresh) " AND cell_id <= " else " WHERE cell_id <= ", max(cellrange), " AND cell_id >= ", min(cellrange)
       )
     }
     DBI::dbGetQuery(con, query_str)
@@ -115,13 +128,26 @@ get_sdm <- function(aphia_id,
   return(df)
 }
 
+cell_id_to_xy <- function(df, cell_id_col = 'cell_id', res = 0.05, drop = TRUE) {
+  ncols   <- as.integer(360 / res)
+  ids     <- df[[cell_id_col]]
+  col_idx <- ((ids - 1L) %% ncols) + 1L
+  row_idx <- ((ids - 1L) %/% ncols) + 1L
+  df <- df |>
+    fmutate(x = round(col_idx * res - 180 - res/2, 3),
+            y = round(90 - row_idx * res + res/2,  3)) |>
+    select(x, y, everything())
+  if(drop) df <- df |> select(-cell_id)
+  return(df)
+}
+
 sample_decomp <- function(df) {
   ### MAJOR REWRITE - full vectorization and use of
   ### collapse::fsum etc within group objects - drop the skew and kurtosis
   ### for speed and ease
   
   # df <- tx_tmp_dfs %>% fsubset(x < -170 & scenario == 'rcp45_2050')
-  g <- collapse::GRP(df, ~ x + y + scenario)
+  g <- collapse::GRP(df, ~ cell_id + scenario)
   
   n     <- df$n
   mn    <- df$mean
@@ -144,8 +170,7 @@ sample_decomp <- function(df) {
   pool_sd   <- sqrt(pool_var)
   
   summary_df <- data.frame(
-    x = g$groups$x,
-    y = g$groups$y,
+    cell_id = g$groups$cell_id,
     n    = pool_n,
     mean = pool_mean,
     sd   = pool_sd,
