@@ -308,6 +308,39 @@ plot(rast(turnover_out_f), main = 'spp turnover')
 
 ```
 
+#### Turnover raster (extirp only)
+
+```{r turnover rasters 2}
+
+turnover_ext_out_f <- here('_output/spp_turnover_maps/all_spp_turnover_extirp.tif')
+
+if(!file.exists(turnover_ext_out_f)) {
+  extirp_r <- all_spp_turnover_df %>%
+    fsubset(stat == 'extirpation') %>%
+    select(-stat) %>%
+    cell_id_to_xy(drop = TRUE) %>%
+    rast(crs = crs(base_rast), ext = ext(base_rast)) %>%
+    project(behr_rast, res = 5000)
+
+  coloniz_r <- all_spp_turnover_df %>%
+    fsubset(stat == 'colonization') %>%
+    select(-stat) %>%
+    cell_id_to_xy(drop = TRUE) %>%
+    rast(crs = crs(base_rast), ext = ext(base_rast)) %>%
+    project(behr_rast, res = 5000)
+
+  extirp_ratio <- extirp_r / (extirp_r + coloniz_r)
+
+  turnover_r <- rast(turnover_out_f)
+
+  turnover_ext_r <- turnover_r * extirp_ratio
+  writeRaster(turnover_ext_r, turnover_ext_out_f)
+}
+
+plot(rast(turnover_ext_out_f), main = 'spp turnover (extirp only)')
+
+```
+
 #### Spp Richness 
 
 ```{r spp richness rasters}
