@@ -534,13 +534,13 @@ bi_lgd_spp <- pnl_lgd_spp
 ```{r}
 fig <- ggdraw() +
   draw_plot(pnl_lgd_spp,  x = .68, y = .55, width = .40, height = .45) +
-  draw_plot(panel_spp_45, x = .03, y = 0.5, width = .74, height = .5) +
+  draw_plot(panel_spp_45, x = .012, y = 0.5, width = .74, height = .5) +
   draw_plot(pnl_lgd_fe,   x = .68, y = .05, width = .40, height = .45) +
-  draw_plot(panel_fe_45,  x = .03, y = 0.0, width = .74, height = .5) +
+  draw_plot(panel_fe_45,  x = .012, y = 0.0, width = .74, height = .5) +
   draw_label('A', x = 0,  y = 1.0, hjust = 0, vjust = 1, size = 16, fontface = 'bold') +
   draw_label('B', x = 0,  y = 0.5, hjust = 0, vjust = 1, size = 16, fontface = 'bold')
-
+ 
 fig_file <- here('ms_figs/figX_spp_fe_impacts.png')
-ggsave(fig_file, height = 5.75, width = 9, dpi = 300)
+ggsave(fig_file, height = 5.75, width = 9.5, dpi = 300)
 knitr::include_graphics(fig_file)
 ```
