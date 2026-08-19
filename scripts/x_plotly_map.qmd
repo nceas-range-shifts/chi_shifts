@@ -1,0 +1,209 @@
+---
+title: Map species and functional change against human impacts
+author: "Casey O'Hara"
+format:
+  html:
+    embed-resources: true
+execute:
+    warning: false
+---
+
+
+```{r}
+library(terra)
+library(tidyverse)
+library(collapse)
+library(here)
+library(plotly)
+source(here('common_fxns.R'))
+```
+
+## Summary
+
+Get a general sense of x/y coordinates for probing patterns of spp and fe turnover.  Reproject into higher res than the native AquaMaps and make a Plotly for quick query of X and Y.  Then transform those into cell values.
+
+```{r}
+turn_r <- rast(here('_output/spp_turnover_maps/all_spp_turnover.tif')) %>% 
+  project('epsg:4326', res = 0.5, method = 'bilinear')
+
+extirp_r <- rast(here('_output/spp_turnover_maps/all_spp_turnover_extirp.tif')) %>% 
+  project('epsg:4326', res = 0.5, method = 'bilinear') 
+
+turn_df <- as.data.frame(turn_r, xy = TRUE)
+```
+```{r}
+p <- ggplot(turn_df, aes(x, y, fill = rcp45_2050)) +
+  geom_raster() +
+  scale_fill_viridis_c() +
+  theme_void()
+
+ggplotly()
+```
+
+### Areas to test
+
+Losses:
+
+* 84.25, 3.25: Indian Ocean
+* -41.75, 7.25: Western Atlantic
+* -170, 4.2: Western Pacific
+
+Gains:
+
+* -35.25, -71: near Antarctica
+* -148.75, 82: Arctic
+* -88, -21: eastern Pacific
+
+
+```{r}
+cellcheck_df <- data.frame(
+    x = c(84.25, -41.75, -170, -35.25, -148.75, -88),
+    y = c(3.25, 7.25, 4.2, -71, 82, -21)
+  ) %>%
+  xy_to_cell_id(drop = FALSE)
+cellcheck_cells <- cellcheck_df$cell_id
+
+aquax_meta <- get_aquax_meta() %>%
+  mutate(aphia_id = as.integer(aphia_id))
+aphia_ids <- aquax_meta$aphia_id
+```
+
+Grab species presence/absence for current, rcp4.5, and 8.5 scenarios at the loss pixels.  Examine which kinds of species are being lost!
+
+* Use get_sdm to identify the species in the cell - including current and future presence
+* join with aquax_meta to get species information - benthic vs pelagic, depth range, etc?
+
+```{r}
+out_fstem <- here('tmp/cell_turnover_exploration/cell_explore_%s.csv')
+for(cell in cellcheck_cells) {
+  out_f <- sprintf(out_fstem, cell)
+  if(file.exists(out_f)) next()
+
+  sdm_result <- get_sdm(aphia_ids, 
+                  scenario = c("current", 'rcp45_2050', 'rcp85_2050'),
+                  cellrange = cell) %>%
+    left_join(aquax_meta, by = 'aphia_id')
+  write_csv(sdm_result, out_f)
+}
+
+out_fs <- list.files(dirname(out_fstem), pattern = 'cell_explore.+csv',full.names = TRUE)
+sdm_results <- lapply(X = out_fs, 
+                      FUN = read_csv, show_col_types = FALSE) %>% 
+  bind_rows() %>%
+  mutate(loss = (cell_id %in% cellcheck_cells[1:3]))
+```
+
+#### Indian Ocean
+
+Examine current vs future spp counts, and compare taxa and water col positions.
+
+```{r}
+df <- sdm_results %>%
+  filter(cell_id == cellcheck_cells[1]) %>%
+  mutate(loss = !is.na(current) & is.na(rcp45_2050)) 
+
+df$loss %>% table()
+
+### losses vs midwater/bottom
+df %>%
+  mutate(bottom = benthic | demersal) %>%
+  select(loss, bottom) %>%
+  table()
+
+### losses vs phylum
+df %>%
+  select(loss, phylum) %>%
+  table()
+
+### losses vs range size
+df %>%
+  group_by(loss) %>%
+  summarize(mean_range = mean(range_pixels),
+            sd_range = sd(range_pixels),
+            depth_shallow = mean(depth_range_shallow, na.rm = TRUE),
+            depth_deep    = mean(depth_range_deep, na.rm = TRUE))
+```
+
+For this cell, most of the losses are pelagic spp, not demersal/benthic spp; plenty of chordata lost not just invertebrates; no major difference in mean range size... lost spp are generally shallower than non-lost spp.
+
+Check, are the temperature swings/shifts higher here in the mid-Indian Ocean than along coastlines?
+
+```{r}
+library(biooracler)
+
+### ll <- list_layers('Ocean Temperature')
+lat <- c(-30, 45); lon = c(-160.975, 120)
+t_2010 <- c('2010-01-01T00:00:00Z', '2010-01-01T00:00:00Z')
+t_2050 <- c('2050-01-01T00:00:00Z', '2050-01-01T00:00:00Z')
+
+rast_out_fstem <- here('tmp/cell_turnover_exploration/rast_%s.tif')
+
+rast_out_fs <- sprintf(rast_out_fstem, c('current_depthmax',
+                                         'current_depthsurf',
+                                         '2050_depthmax',
+                                         '2050_depthsurf'))
+if(any(!file.exists(rast_out_fs))) {
+  temp_max_current  <- download_layers('thetao_baseline_2000_2019_depthmax', 
+                                      constraints = list(latitude = lat,
+                                                         longitude = lon,
+                                                         time = t_2010))
+  writeRaster(temp_max_current, rast_out_fs[1], overwrite = TRUE)
+  temp_surf_current <- download_layers('thetao_baseline_2000_2019_depthsurf', 
+                                      constraints = list(latitude = lat,
+                                                         longitude = lon,
+                                                         time = t_2010))
+  writeRaster(temp_surf_current, rast_out_fs[2], overwrite = TRUE)
+  temp_max_2050     <- download_layers('thetao_ssp245_2020_2100_depthmax', 
+                                      constraints = list(latitude = lat, longitude = lon, time = t_2050))
+  writeRaster(temp_max_2050, rast_out_fs[3], overwrite = TRUE)
+  temp_surf_2050    <- download_layers('thetao_ssp245_2020_2100_depthsurf', 
+                                      constraints = list(latitude = lat, longitude = lon, time = t_2050))
+  writeRaster(temp_surf_2050, rast_out_fs[4], overwrite = TRUE)
+}
+
+temp_max_current  <- rast(rast_out_fs[1])
+temp_surf_current <- rast(rast_out_fs[2])
+temp_max_2050     <- rast(rast_out_fs[3])[[1:6]] ### drop sd
+temp_surf_2050    <- rast(rast_out_fs[4])[[1:6]] ### drop sd
+
+diff_rasts_mid  <- c(temp_max_2050 - temp_max_current)
+diff_rasts_surf <- c(temp_surf_2050 - temp_surf_current)
+plot(diff_rasts_mid); plot(diff_rasts_surf)
+
+plot(diff_rasts_surf - diff_rasts_mid)
+
+```
+
+It looks like sea surface temperatures are changing more rapidly than bottom (no surprise there).  This could drive the higher losses in shallower waters.  Let's plot just the mean temps to see the amount of change.
+
+```{r}
+mean_t_rasts <- c(temp_max_current[['thetao_mean']],
+                  temp_surf_current[['thetao_mean']],
+                  temp_max_2050[['thetao_mean']],
+                  temp_surf_2050[['thetao_mean']]) %>%
+  setNames(c('max_current', 'surf_current', 'max_2050', 'surf_2050'))
+
+mean_t_df <- as.data.frame(mean_t_rasts, xy = TRUE) %>%
+  mutate(max_diff = max_2050 - max_current,
+         surf_diff = surf_2050 - surf_current,
+         surf_max_diff = surf_diff - max_diff) %>%
+  select(x, y, 
+        #  max_current, surf_current, 
+         max_diff, surf_diff, surf_max_diff) %>%
+  pivot_longer(-c(x, y), names_to = "param", values_to = "val")
+
+mean_t_df_agg <- mean_t_df %>%
+  fmutate(x = round(x + .001, 1), y = round(y + .001, 1)) %>%
+  fgroup_by(x, y, param) %>%
+  fsummarize(val = fmean(val, na.rm = TRUE))
+
+ggplot(mean_t_df_agg, aes(x, y, fill = val)) +
+  geom_raster() +
+  scale_fill_viridis_c() +
+  coord_fixed() +
+  facet_wrap(~ param, ncol = 1)
+```
+
+The `surf_max_diff` shows that the surface temperatures are changing faster than the bottom temperatures, particularly for deeper areas.  In shallower areas (e.g., Coral Sea) the changes are more subdued, since the bottom temperatures are closer to the surface and thus more likely to also increase a bit (though still less than surface).  This is pretty intuitive.  
+
+But since pelagic spp are modeled using surface temps while benthic are modeled using bottom temps (verify this is fully accurate!) that could be driving the loss of pelagic spp relative to benthic spp.

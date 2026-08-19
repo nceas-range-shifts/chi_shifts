@@ -1,0 +1,329 @@
+---
+title: Map community change - apex predators
+author: "Casey O'Hara"
+format:
+  html:
+    embed-resources: true
+execute:
+    warning: false
+---
+
+## Summary
+
+For each pixel, identify for each scenario the changes in community composition by taxon relative to the current composition.  Here we will focus on larger apex predators to see how those spp are changing relative to spp composition overall.
+
+* Count: persistence (current & scenario), colonization (!current & scenario), extirpation (current & !scenario)
+* Turnover: SSI $QS = \frac{2a}{2a + b + c}$ where:
+    * $a$ is species shared by both sites (scenarios) - persistence
+    * $b$ is species unique to first site (current) - extirpation
+    * $c$ is species unique to second site (scenario) - colonization
+
+## Data
+
+* AquaX species distribution models from Reygondeau et al. (2026). AquaX: An enhanced and revised AquaMaps framework to model marine species distributions and biodiversity. PLOS ONE, 21(2), e0335823. https://doi.org/10.1371/journal.pone.0335823
+
+## Methods
+
+* Read in SDMs (by slice) for all species in taxon as long data frame
+* For each scenario, by row (spp and pixel) classify from presence/absence to persistence/colonization/extirpation
+* Group by pixel and classification, and summarize
+* Group by pixel and summarize SSI
+* Save out as raster or parquet.
+
+Once complete for each taxon, then combine and calculate across all taxa.
+
+```{r attach packages}
+#| message: false
+#| 
+library(tidyverse)
+library(here)
+library(arrow)
+library(collapse)
+library(terra)
+library(cowplot)
+
+source(here('common_fxns.R'))
+```
+
+### Gather species, taxa, and vulnerability scores
+
+```{r gather data}
+aquax_meta <- get_aquax_meta() %>%
+  filter(sdm == 'SDM')
+
+spp_tx_df <- get_spp_traits() %>%
+  select(aphia_id, taxon) %>%
+  distinct()
+
+### Apex: trophic level > 4, body size > 30 cm, and mobile
+spp_apex_df <- read_csv(here('_data/ohara_2024/funct_entity_traits/fe_spp_traits.csv')) %>%
+  filter(troph >= 4) %>%
+  filter(length_cm >= 30) %>%
+  filter(adult_mob %in% c('mobile resident', 'migratory/nomadic')) %>%
+  left_join(spp_tx_df, by = 'aphia_id')
+# spp_apex_df$taxon %>% table()
+```
+
+
+### Iterate over taxa
+
+For each taxon, create a composition map.  "Map" is a parquet file containing columns:
+
+* cell_id (integer): id for each pixel (was x, y (numeric): x/y in degrees for a pixel)
+* stat: the statistic described in this observation: n, persistence, colonization, extirpation, SSI
+* rcp45_2050: projected value of this stat for this pixel for this scenario
+* rcp85_2050: projected value of this stat for this pixel for this scenario
+
+
+```{r iterate over taxa}
+tx_vec <- spp_apex_df$taxon %>% unique() %>% sort()
+
+scenario <- c('current', 'rcp45_2050', 'rcp85_2050')
+
+for(tx in tx_vec) {
+  ### tx <- tx_vec[1]
+
+  out_fstem <- here::here('_output/spp_turnover_maps/turnover_by_taxon/apex_turnover_%s.parquet') 
+   
+  out_f <- sprintf(out_fstem, tx)
+  if(file.exists(out_f)) next()
+
+  message(paste0('Creating ', basename(out_f), '\n'))
+
+  tx_df <- spp_apex_df %>%
+      filter(taxon == tx)
+  
+  #########################################
+  ### iterate slices for taxon/stressor ###
+  #########################################
+
+  tmp_out_fstem <- here::here('tmp/tx_turnover/apex_turnover_%s_%s.parquet')
+  if(!dir.exists(dirname(tmp_out_fstem))) dir.create(dirname(tmp_out_fstem))
+  
+  ### set the number of row slices by cell_id: because cell_id scans rowwise,
+  ### row 1 is 1-7200, 2 is 7201-14400, etc.
+  yslice_w <- ifelse(tx == 'fish', 2, 5)  ### slice width in degrees (fish is huge taxon, smaller slices!)
+  yslice_n <- 180 / yslice_w              ### number of vertical slices
+
+  slice_vec <- 1:yslice_n
+
+  for(i in slice_vec) {
+    ### i <- 2
+    ### generate cellrange for this slice of y rows
+    cellrange <- calc_cellrange(i, yslice_w)
+     
+    tmp_out_f <- sprintf(tmp_out_fstem, tx, paste0(cellrange, collapse = '_'))
+    if(file.exists(tmp_out_f)) next()
+    
+    #########################################
+    ### get sdms for this slice and taxon ###
+    #########################################
+    sdm_df <- get_sdm(aphia_id = tx_df$aphia_id %>% unique(), 
+                      scenario = scenario,
+                      cellrange = cellrange,
+                      apply_thresh = TRUE)
+
+    ### FOR EACH SCENARIO:
+    future_scens <- scenario[scenario != 'current']
+
+    ### Reclassify each spp/pixel as persistent, extirpated, or colonized
+    sdm_reclass <- sdm_df %>%
+      ### present = 1, absent = 0
+      fmutate(across(all_of(scenario), \(z) !is.na(z))) %>%
+      ### extirp = 1 + 0 = 1; coloniz = 0 + 2 = 2; persist = 1 + 2 = 3
+      fmutate(across(all_of(future_scens), \(z) .$current + z*2))
+    
+    ### Summarize across species for each pixel
+    reclass_vec <- c('extirpation', 'colonization', 'persistence')
+    sdm_summary <- parallel::mclapply(mc.cores = length(reclass_vec),
+        X = seq_along(reclass_vec),
+        FUN = function(i) {
+          sdm_reclass %>%
+            fgroup_by(cell_id) %>%
+            fsummarize(across(all_of(future_scens), \(z) sum(z == i)))
+        }) %>% 
+      setNames(reclass_vec) %>%
+      collapse::rowbind(idcol = 'stat') %>%
+      fmutate(stat = as.character(stat))
+
+    if(nrow(sdm_summary) == 0) {
+      ### for empty set, write out placeholder files
+        arrow::write_parquet(data.frame(), tmp_out_f)
+        next()
+    }
+    
+    ### Calculate SSI from persistence/extirp/colonization
+    sdm_ssi_df <- parallel::mclapply(mc.cores = length(future_scens),
+        X = future_scens,
+        FUN = function(sc) {
+          ### sc <- future_scens[1]
+          ssi_df <- sdm_summary %>%
+            select(cell_id, stat, scenario = all_of(sc)) %>%
+            pivot_wider(names_from = 'stat', values_from = 'scenario') %>%
+            fmutate(ssi = 2 * persistence / (2 * persistence + extirpation + colonization)) %>%
+            select(cell_id, !!sc := ssi)
+        }) %>%
+      purrr::reduce(.f = full_join, by = c('cell_id')) %>%
+      fmutate(stat = 'ssi')
+      
+    ### write out to tmp file
+    arrow::write_parquet(rowbind(sdm_summary, sdm_ssi_df), tmp_out_f)
+    
+  } ### END ITERATION OVER SLICES
+
+  ##########################################
+  ### assemble slices for taxon turnover ###
+  ##########################################
+
+  tmp_fs <- list.files(dirname(tmp_out_fstem), pattern = tx, full.names = TRUE)
+
+  complete_tx_turnover_df <- lapply(
+    X = tmp_fs,
+    FUN = arrow::read_parquet,
+  ) %>%
+    rowbind()
+
+  arrow::write_parquet(complete_tx_turnover_df, out_f)
+  
+  unlink(tmp_fs)  ### clean up temp directory
+
+} ### END LOOP OVER TAXA
+```
+
+### Combine taxa maps
+
+```{r}
+
+apex_spp_turnover_f <- here('_output/spp_turnover_maps/apex_spp_community_change.parquet')
+
+if(!file.exists(apex_spp_turnover_f)) {
+  apex_map_fs <- list.files(here('_output/spp_turnover_maps/turnover_by_taxon'), 
+                        pattern = 'apex_turnover.+.parquet', full.names = TRUE)
+  
+  tx_vec <- basename(apex_map_fs) %>% str_remove_all('apex_turnover_|.parquet')
+  
+  apex_maps <- lapply(X = apex_map_fs, 
+                    FUN = \(z) {
+                      read_parquet(z) %>%
+                        pivot_wider(names_from = stat, values_from = c(rcp45_2050, rcp85_2050))
+                      }) %>%
+    setNames(tx_vec) %>%
+    rowbind(idcol = 'taxon')
+  
+  all_maps <- apex_maps %>%
+    fgroup_by(cell_id) %>%
+    fsummarize(across(-c(cell_id, taxon), sum))
+  
+  pers_colo_extirp <- all_maps %>%
+    select(-contains('ssi')) %>%
+    setNames(str_replace(names(.), '2050_', '2050X')) %>%
+    pivot_longer(cols = -c(cell_id), names_to = c('.value', 'stat'), names_sep = 'X')
+  
+  ssi_df <- all_maps %>%
+    fmutate(rcp45_2050 = 2 * rcp45_2050_persistence / (2 * rcp45_2050_persistence + rcp45_2050_extirpation + rcp45_2050_colonization),
+            rcp85_2050 = 2 * rcp85_2050_persistence / (2 * rcp85_2050_persistence + rcp85_2050_extirpation + rcp85_2050_colonization)) %>%
+    select(cell_id, rcp45_2050, rcp85_2050) %>%
+    fmutate(stat = 'ssi')
+  
+  all_spp_turnover <- rowbind(pers_colo_extirp, ssi_df)
+  
+  write_parquet(all_spp_turnover, all_spp_turnover_f)
+}
+```
+
+### Write out raster outputs
+
+Reproject lat/long into Behrmann equal area projections for MS figure displays.  For turnover and species richness, save out the results as two-layer raster (one for each future scenario).
+
+```{r}
+base_rast <- rast(ext(-180, 180, -90, 90),
+                  resolution = 0.05,
+                  crs = 'epsg:4326')
+behr_rast <- base_rast %>%
+  project(y = '+proj=cea +lat_ts=30 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs', 
+          res = 5000)
+```
+
+::: panel-tabset
+
+#### Turnover raster
+
+```{r turnover rasters}
+all_spp_turnover_df <- read_parquet(all_spp_turnover_f) 
+
+turnover_out_f <- here('_output/spp_turnover_maps/apex_spp_turnover.tif')
+
+if(!file.exists(turnover_out_f)) {
+
+  ssi_r <- all_spp_turnover_df %>%
+    fsubset(stat == 'ssi') %>%
+    select(-stat) %>%
+    cell_id_to_xy(drop = TRUE) %>%
+    rast(crs = crs(base_rast), ext = ext(base_rast)) %>%
+    project(behr_rast, res = 5000)
+  turnover_r <- 1 - ssi_r
+  writeRaster(turnover_r, turnover_out_f)
+}
+
+plot(rast(turnover_out_f), main = 'spp turnover')
+
+```
+
+#### Turnover raster (extirp only)
+
+```{r turnover rasters 2}
+
+turnover_ext_out_f <- here('_output/spp_turnover_maps/apex_spp_turnover_extirp.tif')
+
+if(!file.exists(turnover_ext_out_f)) {
+  extirp_r <- all_spp_turnover_df %>%
+    fsubset(stat == 'extirpation') %>%
+    select(-stat) %>%
+    cell_id_to_xy(drop = TRUE) %>%
+    rast(crs = crs(base_rast), ext = ext(base_rast)) %>%
+    project(behr_rast, res = 5000)
+
+  coloniz_r <- all_spp_turnover_df %>%
+    fsubset(stat == 'colonization') %>%
+    select(-stat) %>%
+    cell_id_to_xy(drop = TRUE) %>%
+    rast(crs = crs(base_rast), ext = ext(base_rast)) %>%
+    project(behr_rast, res = 5000)
+
+  extirp_ratio <- extirp_r / (extirp_r + coloniz_r)
+
+  turnover_r <- rast(turnover_out_f)
+
+  turnover_ext_r <- turnover_r * extirp_ratio
+  writeRaster(turnover_ext_r, turnover_ext_out_f)
+}
+
+plot(rast(turnover_ext_out_f), main = 'spp turnover (extirp only)')
+
+```
+
+#### Spp Richness 
+
+```{r spp richness rasters}
+spp_rich_out_f <- here('_output/spp_turnover_maps/apex_spp_richness.tif')
+
+if(!file.exists(spp_rich_out_f)) {
+  nspp_df <- all_spp_turnover_df %>%
+    pivot_longer(cols = c('rcp45_2050', 'rcp85_2050'), names_to = 'scenario', values_to = 'value') %>%
+    pivot_wider(names_from = stat, values_from = value) %>%
+    fmutate(spp_r_current = persistence + extirpation,
+            spp_r_future  = colonization + persistence) %>%
+    select(cell_id, scenario, spp_r_current, spp_r_future) %>%
+    pivot_wider(names_from = scenario, values_from = spp_r_future)
+
+  nspp_r <- nspp_df %>%
+    cell_id_to_xy(drop = TRUE) %>%
+    rast(crs = crs(base_rast), ext = ext(base_rast)) %>%
+    project(behr_rast, res = 5000)
+
+  writeRaster(nspp_r, spp_rich_out_f)
+}
+plot(rast(spp_rich_out_f), main = 'spp richness')
+
+```
+

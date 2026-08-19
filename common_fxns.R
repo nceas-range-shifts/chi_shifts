@@ -141,6 +141,20 @@ cell_id_to_xy <- function(df, cell_id_col = 'cell_id', res = 0.05, drop = TRUE) 
   return(df)
 }
 
+xy_to_cell_id <- function(df, x_col = 'x', y_col = 'y', res = 0.05, drop = TRUE) {
+  ncols   <- as.integer(360 / res)
+  x       <- df[[x_col]]
+  y       <- df[[y_col]]
+  col_idx <- as.integer(round((x + 180 + res/2) / res))
+  row_idx <- as.integer(round((90 - y + res/2) / res))
+  df <- df |>
+    fmutate(cell_id = (row_idx - 1L) * ncols + col_idx) |>
+    select(cell_id, everything())
+  if(drop) df <- df |> select(-all_of(c(x_col, y_col)))
+  return(df)
+}
+
+
 sample_decomp <- function(df) {
   ### MAJOR REWRITE - full vectorization and use of
   ### collapse::fsum etc within group objects - drop the skew and kurtosis
