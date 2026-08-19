@@ -53,54 +53,16 @@ available_spp <- list.files(here_aquax('SDM')) %>%
   as.numeric()
 aquax_meta <- get_aquax_meta() %>%
   filter(aphia_id %in% available_spp)
-spp_tx_df <- get_spp_vuln() %>%
+spp_id_tx_df <- get_spp_vuln() %>%
   ### spp vuln includes the taxa we want
   select(aphia_id, taxon) %>%
-  distinct() %>%
-  filter(aphia_id %in% aquax_meta$aphia_id)
+  distinct()
 
-```
-
-### Iterate over taxa
-
-* process_slice to grab sdms for a taxon, join vuln, and process down to summary stats
-
-```{r define helper functions}
-
-process_slice <- function(sdm_df, digits = NULL) {
-  ### if no observations in this slice, move along
-  if(nrow(sdm_df) == 0) return(data.frame())
-  
-  ### classify each spp, then join all scenarios
-  sdm_tx_vuln_df <- lapply(X = scenario, 
-                           FUN = pull_scenario_stats, 
-                           d_array = sdm_tx_vuln_array) %>%
-    ### purrr::reduce to apply full join programmatically across all scenarios
-    purrr::reduce(.f = full_join, by = c('cell_id', 'stat'))
-  if(!is.null(digits)) {
-    sdm_tx_vuln_df <- sdm_tx_vuln_df %>%
-      ### collapse::fmutate doesn't understand this syntax alas
-      collapse::fmutate(across(.cols = all_of(scenario), .fns = round, digits = digits))
-  }
-  return(sdm_tx_vuln_df)
-}
-
-classify_scenario <- function(sc, d_array) {
-  df <- d_array[ , , sc] %>%
-    as.data.frame() |>
-    janitor::clean_names() |>
-    ### the qsu seems to fill in zero where no observations...
-    ### drop those obs here, let the purrr::reduce fill in values as NA
-    collapse::fsubset(n > 0) |>
-    ### drop min and max values... keep mean, sd
-    select(-min, -max) |>
-    ### qsu creates a group column representing cell_id
-    rename(cell_id = variable) |>
-    pivot_longer(cols = -cell_id, names_to = 'stat', values_to = sc) |>
-    collapse::fmutate(cell_id = as.integer(as.character(cell_id)))
-
-  return(df)
-}
+spp_tx_df <- aquax_meta %>% 
+  left_join(spp_id_tx_df) %>%
+  mutate(taxon = ifelse(is.na(taxon), 'other_inverts', taxon)) %>%
+  select(aphia_id, taxon) %>%
+  distinct()
 ```
 
 
@@ -112,7 +74,6 @@ For each taxon, create a composition map.  "Map" is a parquet file containing co
 * stat: the statistic described in this observation: n, persistence, colonization, extirpation, SSI
 * rcp45_2050: projected value of this stat for this pixel for this scenario
 * rcp85_2050: projected value of this stat for this pixel for this scenario
-
 
 ```{r iterate over taxa}
 tx_vec <- spp_tx_df$taxon %>% unique() %>% sort()
