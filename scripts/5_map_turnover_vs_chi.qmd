@@ -106,7 +106,7 @@ impact_sum_r <- c(impact_rcp45, impact_rcp85) |>
 
 THese rasters were created in scripts 3 (spp turnover) and 4 (fe turnover) in the Behrmann projection.
 
-```{r}
+```{r read rasts}
 
 spp_turn_r <- rast(here('_output/spp_turnover_maps/all_spp_turnover.tif'))
 fe_turn_r  <- rast(here('_output/fe_turnover_maps/all_fe_turnover.tif'))
@@ -116,27 +116,58 @@ fe_turn_r  <- rast(here('_output/fe_turnover_maps/all_fe_turnover.tif'))
 
 ## Generate Manuscript Figures
 
-```{r}
+Locate tropics lines and equator as well
+
+```{r set up land and parallels}
 land_sf <- read_sf(here('_data/eezs/esri_world_continents.gpkg')) %>%
   st_transform(crs(behr_rast))
+
+# trop_df <- data.frame(x = 0, y = c(23.425, -23.425, 0)) |> xy_to_cell_id(drop = FALSE)
+### cancer: 9586800, capricorn: 16333200
+# cell_id_behr_df <- base_rast |> 
+#   setValues(1:ncell(base_rast)) |> 
+#   project(behr_rast) |> 
+#   round() |>
+#   as.data.frame(xy = TRUE) |>
+#   filter(lyr.1 %in% trop_df$cell_id)
+### cancer: 2907724.47007114; capricorn: -2907275.52992886
+
+plot_map <- function(data, fill_var) {
+  ggplot() +
+    geom_raster(data = data, aes(x, y, fill = {{ fill_var }})) +
+    ### continents:
+    geom_sf(data = land_sf,
+            fill = 'grey96', color = 'grey30', 
+            size = .1) +
+    ### tropics and equator:
+    geom_hline(yintercept = c(2907724.470, -2907275.530), 
+               linetype = 'dashed', linewidth = 0.25, color = 'grey30') +
+    geom_hline(yintercept = 0, 
+               linetype = 'solid', linewidth = 0.25, color = 'grey30') +
+    ### standardized styling:
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0)) +
+    theme_void()
+}
 ```
 
 ### Map of SPP and FE richness
 
 Current and change 
-```{r}
+```{r spp and fe richness}
 fig_f <- here('ms_figs/figX_spp_fe_richness.png')
 
 if(!file.exists(fig_f)) {
-  nspp_r <- rast(here('_output/spp_turnover_maps/all_spp_richness.tif')) |> round()
-  nfe_r  <- rast(here('_output/fe_turnover_maps/all_fe_richness.tif')) |> round()
+  nspp_r <- rast(here('_output/spp_turnover_maps/all_spp_richness.tif'))
+  nfe_r  <- rast(here('_output/fe_turnover_maps/all_fe_richness.tif'))
 
   ### Diverging palette from magenta to dark green, with yellow tone
   ### in middle - based on hcl.colors(pal = 'Red-Green')
   div_pal <- c("#841859", "#FFFFEE", "#005600")
 
   nspp_df <- as.data.frame(nspp_r, xy = TRUE) %>%
-    fmutate(diff_rcp45_2050 = (rcp45_2050 - spp_r_current) / spp_r_current, 
+    fmutate(log_n = log10(spp_r_current),
+            diff_rcp45_2050 = (rcp45_2050 - spp_r_current) / spp_r_current, 
             diff_rcp85_2050 = (rcp85_2050 - spp_r_current) / spp_r_current) %>%
     ### Treat anything over 1 as 1(+) (Inf: zero spp now 1), 
     ### Treat NaN as zero (zero spp still zero)
@@ -148,7 +179,8 @@ if(!file.exists(fig_f)) {
                                         TRUE ~ diff_rcp85_2050))
 
   nfe_df  <- as.data.frame(nfe_r, xy = TRUE) %>%
-    fmutate(diff_rcp45_2050 = (rcp45_2050 - fe_r_current) / fe_r_current, 
+    fmutate(log_n = log10(fe_r_current),
+            diff_rcp45_2050 = (rcp45_2050 - fe_r_current) / fe_r_current, 
             diff_rcp85_2050 = (rcp85_2050 - fe_r_current) / fe_r_current) %>% 
     fmutate(diff_rcp45_2050 = case_when((diff_rcp45_2050 > 1) ~ 1,
                                         is.nan(diff_rcp45_2050) ~ 0,
@@ -159,68 +191,36 @@ if(!file.exists(fig_f)) {
     
   nspp_max <- max(nspp_df$spp_r_current)
   nfe_max  <- max(nfe_df$fe_r_current)
-  nspp_brks <- seq(1, log10(nspp_max), 1)
-  nspp_panel <- ggplot() +
-    ### plot data:
-    geom_raster(data = nspp_df, aes(x, y, fill = log10(spp_r_current))) +
-    ### continents:
-    geom_sf(data = land_sf,
-            fill = 'grey96', color = 'grey30', 
-            size = .1) +
-    scale_x_continuous(expand = c(0, 0)) +
-    scale_y_continuous(expand = c(0, 0)) +
+  
+  nspp_panel <- plot_map(data = nspp_df, 
+                         fill_var = log_n) +
     scale_fill_viridis_c(breaks = c(0, 1, 2, 3, log10(nspp_max)), 
-                        labels = c(1, 10, 100, 1000, nspp_max)) +
-    theme_void() +
+                         labels = c(1, 10, 100, 1000, nspp_max)) +
     theme(text = element_text(size = 9)) +
     labs(fill = expression(N[spp]))
 
-  nfe_panel <- ggplot() +
-    ### plot data:
-    geom_raster(data = nfe_df, aes(x, y, fill = log10(fe_r_current))) +
-    ### continents:
-    geom_sf(data = land_sf,
-            fill = 'grey96', color = 'grey30', 
-            size = .1) +
-    scale_x_continuous(expand = c(0, 0)) +
-    scale_y_continuous(expand = c(0, 0)) +
+  nfe_panel <- plot_map(data = nfe_df, 
+                         fill_var = log_n) +
     scale_fill_viridis_c(breaks = c(0, 1, 2, log10(nfe_max)), 
                         labels = c(1, 10, 100, nfe_max)) +
-    theme_void() +
     theme(text = element_text(size = 9)) +
     labs(fill = expression(N[FE]))
 
-  dspp_panel <- ggplot() +
-    ### plot data:
-    geom_raster(data = nspp_df, aes(x, y, fill = diff_rcp45_2050)) +
-    ### continents:
-    geom_sf(data = land_sf,
-            fill = 'grey96', color = 'grey30', 
-            size = .1) +
-    scale_x_continuous(expand = c(0, 0)) +
-    scale_y_continuous(expand = c(0, 0)) +
+  dspp_panel <- plot_map(data = nspp_df, 
+                         fill_var = diff_rcp45_2050) +
     scale_fill_gradient2(low = div_pal[1], mid = div_pal[2], 
                         high = div_pal[3], midpoint = 0,
                         breaks = c(-1, -.5, 0, .5, 1),
                         labels = c('-100%', '-50%', '0%', '50%', '≥100%')) +
-    theme_void() +
     theme(text = element_text(size = 9)) +
     labs(fill = expression('∆' * N[spp]))
 
-  dfe_panel <- ggplot() +
-    ### plot data:
-    geom_raster(data = nfe_df, aes(x, y, fill = diff_rcp45_2050)) +
-    ### continents:
-    geom_sf(data = land_sf,
-            fill = 'grey96', color = 'grey30', 
-            size = .1) +
-    scale_x_continuous(expand = c(0, 0)) +
-    scale_y_continuous(expand = c(0, 0)) +
+  dfe_panel <- plot_map(data = nfe_df, 
+                        fill_var = diff_rcp45_2050) +
     scale_fill_gradient2(low = div_pal[1], mid = div_pal[2], 
                         high = div_pal[3], midpoint = 0,
                         breaks = c(-1, -.5, 0, .5, 1),
                         labels = c('-100%', '-50%', '0%', '50%', '≥100%')) +
-    theme_void() +
     theme(text = element_text(size = 9)) +
     labs(fill = expression('∆' * N[FE]))
 
@@ -239,6 +239,105 @@ if(!file.exists(fig_f)) {
 knitr::include_graphics(fig_f)
 ```
 
+#### Focus on apex spp: richness and pct change
+```{r apex spp richness}
+fig_f <- here('ms_figs/figX_apex_spp_richness.png')
+
+if(!file.exists(fig_f)) {
+  nspp_r <- rast(here('_output/spp_turnover_maps/apex_spp_richness.tif'))
+
+  ### Diverging palette from magenta to dark green, with yellow tone
+  ### in middle - based on hcl.colors(pal = 'Red-Green')
+  div_pal <- c("#841859", "#FFFFEE", "#005600")
+
+  nspp_df <- as.data.frame(nspp_r, xy = TRUE) %>%
+    fmutate(log_n = log10(spp_r_current),
+            diff_rcp45_2050 = (rcp45_2050 - spp_r_current) / spp_r_current, 
+            diff_rcp85_2050 = (rcp85_2050 - spp_r_current) / spp_r_current) %>%
+    ### Treat anything over 1 as 1(+) (Inf: zero spp now 1), 
+    ### Treat NaN as zero (zero spp still zero)
+    fmutate(diff_rcp45_2050 = case_when((diff_rcp45_2050 > 1) ~ 1,
+                                        is.nan(diff_rcp45_2050) ~ 0,
+                                        TRUE ~ diff_rcp45_2050)) %>%
+    fmutate(diff_rcp85_2050 = case_when((diff_rcp85_2050 > 1) ~ 1,
+                                        is.nan(diff_rcp85_2050) ~ 0,
+                                        TRUE ~ diff_rcp85_2050))
+    
+  nspp_max <- max(nspp_df$spp_r_current)
+  nspp_brks <- seq(1, log10(nspp_max), 1)
+  nspp_panel <- plot_map(data = nspp_df, fill_var = log_n) +
+    scale_fill_viridis_c(breaks = c(0, 1, 2, 3, log10(nspp_max)), 
+                        labels = c(1, 10, 100, 1000, nspp_max)) +
+    theme(text = element_text(size = 9)) +
+    labs(fill = expression(N[spp]))
+
+
+
+  dspp_panel <- plot_map(data = nspp_df, fill_var = diff_rcp45_2050) +
+    scale_fill_gradient2(low = div_pal[1], mid = div_pal[2], 
+                        high = div_pal[3], midpoint = 0,
+                        breaks = c(-1, -.5, 0, .5, 1),
+                        labels = c('-100%', '-50%', '0%', '50%', '≥100%')) +
+    theme(text = element_text(size = 9)) +
+    labs(fill = expression('∆' * N[spp]))
+
+
+  p <- ggdraw() +
+    draw_plot(nspp_panel, x = .02, y = 0.5, height = .5, width = .98) +
+    draw_plot(dspp_panel, x = .02, y = 0.0, height = .5, width = .98) +
+    draw_label('A', x = 0, y = 1.0,  vjust = 1, hjust = 0, size = 14, fontface = 'bold') +
+    draw_label('B', x = 0, y = 0.5, vjust = 1, hjust = 0, size = 14, fontface = 'bold')
+  ggsave(fig_f, height = 6, width = 8, dpi = 300)
+}
+knitr::include_graphics(fig_f)
+```
+
+#### Focus on apex spp: relative change vs other spp
+```{r apex spp relative change}
+fig_f <- here('ms_figs/figX_apex_spp_vs_other_spp.png')
+
+if(!file.exists(fig_f)) {
+  apex_r <- rast(here('_output/spp_turnover_maps/apex_spp_richness.tif'))
+  all_r  <- rast(here('_output/spp_turnover_maps/all_spp_richness.tif'))
+
+  ### Diverging palette orange-purple to indicate difference from pink-green
+  div_pal <- c("#f1a340", "#f1f1f1", "#998ec3")
+
+  apex_df <- as.data.frame(apex_r, xy = TRUE) %>%
+    select(x, y, apex_current = spp_r_current, apex_2050 = rcp45_2050)
+   
+  all_df <- as.data.frame(all_r, xy = TRUE) %>%
+    select(x, y, all_current = spp_r_current, all_2050 = rcp45_2050)
+
+  compare_df <- apex_df %>%
+    join(all_df, how = 'full', on = c('x', 'y')) %>%
+    fmutate(other_current = all_current - apex_current,
+            other_2050    = all_2050 - apex_2050,
+            apex_diff     = (apex_2050 - apex_current) / apex_current,
+            other_diff    = (other_2050 - other_current) / other_current) %>%
+    fmutate(delta = apex_diff - other_diff,
+            delta = ifelse(delta > 1, 1, delta),
+            delta = ifelse(delta < -1, -1, delta))
+
+  diff_panel <- plot_map(data = compare_df, fill_var = delta) +
+    scale_fill_gradient2(low = div_pal[1], mid = div_pal[2], 
+                        high = div_pal[3], midpoint = 0,
+                        breaks = c(-1, -.5, 0, .5, 1),
+                        labels = c('-100%', '-50%', '0%', '50%', '≥100%')) +
+    theme(text = element_text(size = 9)) +
+    labs(fill = expression('∆' * N[pred] - '∆' * N[other]))
+
+
+  # p <- ggdraw() +
+  #   draw_plot(nspp_panel, x = .02, y = 0.5, height = .5, width = .98) +
+  #   draw_plot(dspp_panel, x = .02, y = 0.0, height = .5, width = .98) +
+  #   draw_label('A', x = 0, y = 1.0,  vjust = 1, hjust = 0, size = 14, fontface = 'bold') +
+  #   draw_label('B', x = 0, y = 0.5, vjust = 1, hjust = 0, size = 14, fontface = 'bold')
+  ggsave(fig_f, height = 3.1, width = 8, dpi = 300)
+}
+knitr::include_graphics(fig_f)
+```
+
 ### Map of turnover
 
 Compare species and FE turnover in a single plot, just examining RCP 4.5 (8.5 can go in SI?)
@@ -252,24 +351,13 @@ if(!exists(fig_file)) {
     pivot_longer(cols = -c(x, y), names_to = 'var', values_to = 'val') %>%
     mutate(var = factor(var, levels = c('Species Turnover', 'Functional Entity Turnover'))) 
 
-  spp_fe_turnover_plot <- ggplot() +
-    # ### background for NA cells:
-    # geom_raster(data = ocean_df, aes(x, y), fill = 'grey85') +
-    ### plot data:
-    geom_raster(data = turnover_df, aes(x, y, fill = val)) +
-    ### continents:
-    geom_sf(data = land_sf,
-            fill = 'grey96', color = 'grey30', 
-            size = .1) +
-    scale_x_continuous(expand = c(0, 0)) +
-    scale_y_continuous(expand = c(0, 0)) +
+  spp_fe_turnover_plot <- plot_map(data = turnover_df, fill_var = val) +
     scale_fill_viridis_c() +
-    theme_void() +
     theme(axis.text = element_blank(), 
           axis.title = element_blank(),
           strip.text.y.left = element_text(angle = 90)) +
     facet_wrap(~ var, ncol = 1, strip.position = 'left') +
-    labs(fill = 'Turnover\n(1 - SSI)')
+    labs(fill = expression(beta[.Sør]))
 
   fig_file <- here('ms_figs/figX_spp_fe_turnover.png')
   ggsave(fig_file, height = 6, width = 8, dpi = 300)
@@ -304,19 +392,8 @@ if(!file.exists(fig_file)) {
     fmutate(unit = factor(unit, levels = c('Species', 'FE')),
             comp = factor(comp, levels = c('Extirpation', 'Colonization')))
 
-  spp_fe_turn_comp__plot <- ggplot() +
-    # ### background for NA cells:
-    # geom_raster(data = ocean_df, aes(x, y), fill = 'grey85') +
-    ### plot data:
-    geom_raster(data = turn_comp_df, aes(x, y, fill = val)) +
-    ### continents:
-    geom_sf(data = land_sf,
-            fill = 'grey96', color = 'grey30', 
-            size = .1) +
-    scale_x_continuous(expand = c(0, 0)) +
-    scale_y_continuous(expand = c(0, 0)) +
+  spp_fe_turn_comp_plot <- plot_map(data = turn_comp_df, fill_var = val) +
     scale_fill_viridis_c() +
-    theme_void() +
     theme(strip.text.y.left = element_text(angle = 90),
           axis.text = element_blank(), 
           axis.title = element_blank()) +
@@ -383,7 +460,7 @@ spp_turn_impact_df <- read_parquet(spp_turn_impact_f)
 
 ```
 
-```{r}
+```{r set up biplot}
 calc_biplot_pcts <- function(df, scenario = 'rcp45') {
   df_sum <- df %>% 
     select(bi_class = all_of(paste0('bi_class_', scenario))) %>%
@@ -436,84 +513,44 @@ pnl_lgd_spp <- panel_lgd_raw +
 
 #### FE turnover vs impacts, RCP4.5
 ```{r fe_45}
-panel_fe_45 <- ggplot() +
-  # ### background for NA cells:
-  # geom_raster(data = ocean_df, aes(x, y), fill = 'grey85') +
-  ### plot data:
-  geom_raster(data = fe_turn_impact_df, aes(x, y, fill = bi_class_rcp45), show.legend = FALSE) +
+panel_fe_45 <- plot_map(data = fe_turn_impact_df, fill_var = bi_class_rcp45) +
   bi_scale_fill(pal = map_pal, dim = 4) +
-  ### continents:
-  geom_sf(data = land_sf, 
-          fill = 'grey96', color = 'grey30', 
-          size = .1) +
-  scale_x_continuous(expand = c(0, 0)) +
-  scale_y_continuous(expand = c(0, 0)) +
-  theme_void() +
   theme(axis.text = element_blank(), 
-        axis.title = element_blank())
+        axis.title = element_blank(),
+        legend.position = 'none')
 
 # panel_fe_45
 ```
 
 #### FE turnover vs impacts, RCP8.5
 ```{r fe_85}
-panel_fe_85 <- ggplot() +
-  # ### background for NA cells:
-  # geom_raster(data = ocean_df, aes(x, y), fill = 'grey85') +
-  ### plot data:
-  geom_raster(data = fe_turn_impact_df, aes(x, y, fill = bi_class_rcp85), show.legend = FALSE) +
+panel_fe_85 <- plot_map(data = fe_turn_impact_df, fill_var = bi_class_rcp85) +
   bi_scale_fill(pal = map_pal, dim = 4) +
-  ### continents:
-  geom_sf(data = land_sf,
-          fill = 'grey96', color = 'grey30', 
-          size = .1) +
-  scale_x_continuous(expand = c(0, 0)) +
-  scale_y_continuous(expand = c(0, 0)) +
-  theme_void() +
   theme(axis.text = element_blank(), 
-        axis.title = element_blank())
+        axis.title = element_blank(),
+        legend.position = 'none')
 
 # panel_fe_85
 ```
 
 #### Spp turnover vs impacts, RCP4.5
 ```{r spp_45}
-panel_spp_45 <- ggplot() +
-  # ### background for NA cells:
-  # geom_raster(data = ocean_df, aes(x, y), fill = 'grey85') +
-  ### plot data:
-  geom_raster(data = spp_turn_impact_df, aes(x, y, fill = bi_class_rcp45), show.legend = FALSE) +
+panel_spp_45 <- plot_map(data = spp_turn_impact_df, fill_var = bi_class_rcp45) +
   bi_scale_fill(pal = map_pal, dim = 4) +
-  ### continents:
-  geom_sf(data = land_sf,
-          fill = 'grey96', color = 'grey30', 
-          size = .1) +
-  scale_x_continuous(expand = c(0, 0)) +
-  scale_y_continuous(expand = c(0, 0)) +
-  theme_void() +
   theme(axis.text = element_blank(), 
-        axis.title = element_blank())
+        axis.title = element_blank(),
+        legend.position = 'none')
 
 # panel_spp_45
 ```
 
 #### Spp turnover vs impacts, RCP8.5
 ```{r spp_85}
-panel_spp_85 <- ggplot() +
-  # ### background for NA cells:
-  # geom_raster(data = ocean_df, aes(x, y), fill = 'grey85') +
-  ### plot data:
-  geom_raster(data = spp_turn_impact_df, aes(x, y, fill = bi_class_rcp85), show.legend = FALSE) +
+panel_spp_85 <- plot_map(data = spp_turn_impact_df, fill_var = bi_class_rcp85) +
   bi_scale_fill(pal = map_pal, dim = 4) +
-  ### continents:
-  geom_sf(data = land_sf,
-          fill = 'grey96', color = 'grey30', 
-          size = .1) +
-  scale_x_continuous(expand = c(0, 0)) +
-  scale_y_continuous(expand = c(0, 0)) +
-  theme_void() +
   theme(axis.text = element_blank(), 
-        axis.title = element_blank())
+        axis.title = element_blank(),
+        legend.position = 'none')
 
 # panel_spp_85
 ```
@@ -522,7 +559,7 @@ panel_spp_85 <- ggplot() +
 
 Figure shows RCP4.5 spp and FE turnover vs. impacts.  Impacts are same, but FE turnover will be less than SPP turnover.
 
-```{r}
+```{r pull panels}
 # panel_a <- get_panel(panel_spp_45)
 # panel_b <- get_panel(panel_fe_45)
 panel_a <- panel_spp_45
@@ -531,7 +568,7 @@ bi_lgd_fe  <- pnl_lgd_fe
 bi_lgd_spp <- pnl_lgd_spp
 ```
 
-```{r}
+```{r assemble panels}
 fig <- ggdraw() +
   draw_plot(pnl_lgd_spp,  x = .68, y = .55, width = .40, height = .45) +
   draw_plot(panel_spp_45, x = .012, y = 0.5, width = .74, height = .5) +

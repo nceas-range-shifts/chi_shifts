@@ -321,7 +321,7 @@ if(!file.exists(spp_rich_out_f)) {
     rast(crs = crs(base_rast), ext = ext(base_rast)) %>%
     project(behr_rast, res = 5000)
 
-  writeRaster(nspp_r, spp_rich_out_f)
+  writeRaster(round(nspp_r), spp_rich_out_f)
 }
 plot(rast(spp_rich_out_f), main = 'spp richness')
 

@@ -51,19 +51,25 @@ source(here('common_fxns.R'))
 aquax_meta <- get_aquax_meta() %>%
   filter(sdm == 'SDM')
 
-spp_tx_df <- get_spp_traits() %>%
+spp_id_tx_df <- get_spp_vuln() %>%
+  ### spp vuln includes the taxa we want
   select(aphia_id, taxon) %>%
   distinct()
 
+spp_tx_df <- aquax_meta %>% 
+  left_join(spp_id_tx_df) %>%
+  mutate(taxon = ifelse(is.na(taxon), 'other_inverts', taxon)) %>%
+  select(aphia_id, taxon) %>%
+  distinct()
+  
 ### Apex: trophic level > 4, body size > 30 cm, and mobile
 spp_apex_df <- read_csv(here('_data/ohara_2024/funct_entity_traits/fe_spp_traits.csv')) %>%
   filter(troph >= 4) %>%
   filter(length_cm >= 30) %>%
   filter(adult_mob %in% c('mobile resident', 'migratory/nomadic')) %>%
-  left_join(spp_tx_df, by = 'aphia_id')
+  inner_join(spp_tx_df, by = 'aphia_id')
 # spp_apex_df$taxon %>% table()
 ```
-
 
 ### Iterate over taxa
 
@@ -225,9 +231,9 @@ if(!file.exists(apex_spp_turnover_f)) {
     select(cell_id, rcp45_2050, rcp85_2050) %>%
     fmutate(stat = 'ssi')
   
-  all_spp_turnover <- rowbind(pers_colo_extirp, ssi_df)
+  apex_spp_turnover <- rowbind(pers_colo_extirp, ssi_df)
   
-  write_parquet(all_spp_turnover, all_spp_turnover_f)
+  write_parquet(apex_spp_turnover, apex_spp_turnover_f)
 }
 ```
 
@@ -249,13 +255,13 @@ behr_rast <- base_rast %>%
 #### Turnover raster
 
 ```{r turnover rasters}
-all_spp_turnover_df <- read_parquet(all_spp_turnover_f) 
+apex_spp_turnover_df <- read_parquet(apex_spp_turnover_f) 
 
 turnover_out_f <- here('_output/spp_turnover_maps/apex_spp_turnover.tif')
 
 if(!file.exists(turnover_out_f)) {
 
-  ssi_r <- all_spp_turnover_df %>%
+  ssi_r <- apex_spp_turnover_df %>%
     fsubset(stat == 'ssi') %>%
     select(-stat) %>%
     cell_id_to_xy(drop = TRUE) %>%
@@ -276,14 +282,14 @@ plot(rast(turnover_out_f), main = 'spp turnover')
 turnover_ext_out_f <- here('_output/spp_turnover_maps/apex_spp_turnover_extirp.tif')
 
 if(!file.exists(turnover_ext_out_f)) {
-  extirp_r <- all_spp_turnover_df %>%
+  extirp_r <- apex_spp_turnover_df %>%
     fsubset(stat == 'extirpation') %>%
     select(-stat) %>%
     cell_id_to_xy(drop = TRUE) %>%
     rast(crs = crs(base_rast), ext = ext(base_rast)) %>%
     project(behr_rast, res = 5000)
 
-  coloniz_r <- all_spp_turnover_df %>%
+  coloniz_r <- apex_spp_turnover_df %>%
     fsubset(stat == 'colonization') %>%
     select(-stat) %>%
     cell_id_to_xy(drop = TRUE) %>%
@@ -308,7 +314,7 @@ plot(rast(turnover_ext_out_f), main = 'spp turnover (extirp only)')
 spp_rich_out_f <- here('_output/spp_turnover_maps/apex_spp_richness.tif')
 
 if(!file.exists(spp_rich_out_f)) {
-  nspp_df <- all_spp_turnover_df %>%
+  nspp_df <- apex_spp_turnover_df %>%
     pivot_longer(cols = c('rcp45_2050', 'rcp85_2050'), names_to = 'scenario', values_to = 'value') %>%
     pivot_wider(names_from = stat, values_from = value) %>%
     fmutate(spp_r_current = persistence + extirpation,
@@ -321,7 +327,7 @@ if(!file.exists(spp_rich_out_f)) {
     rast(crs = crs(base_rast), ext = ext(base_rast)) %>%
     project(behr_rast, res = 5000)
 
-  writeRaster(nspp_r, spp_rich_out_f)
+  writeRaster(round(nspp_r), spp_rich_out_f)
 }
 plot(rast(spp_rich_out_f), main = 'spp richness')
 

@@ -408,7 +408,7 @@ if(!file.exists(fe_rich_out_f)) {
     rast(crs = crs(base_rast), ext = ext(base_rast)) %>%
     project(behr_rast, res = 5000)
 
-  writeRaster(nfe_r, fe_rich_out_f)
+  writeRaster(round(nfe_r), fe_rich_out_f)
 }
 plot(rast(fe_rich_out_f), main = 'fe richness')
 
