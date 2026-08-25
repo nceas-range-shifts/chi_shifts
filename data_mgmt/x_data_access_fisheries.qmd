@@ -1,0 +1,56 @@
+---
+title: Download data for fisheries from FAO
+author: "Casey O'Hara"
+format:
+  html:
+    embed-resources: true
+---
+
+## Summary
+
+Download traits used to calculate functional entities for:
+
+
+
+## Methods
+
+```{r}
+library(tidyverse)
+```
+
+Download files as .zip from https://www.fao.org/fishery/collection/capture/en and https://www.fao.org/fishery/collection/aquaculture/en.
+
+Make sure to manually add these to .gitignore!
+
+### Download .zips
+
+```{r}
+capture_q_f <- here::here('_data/fao_2026/capture/Capture_Quantity.csv')
+if(!dir.exists(dirname(capture_q_f))) dir.create(dirname(capture_q_f))
+
+if(!file.exists(capture_q_f)) {
+  capture_url <- 'https://www.fao.org/fishery/static/Data/Capture_2026.1.0.zip'
+  destfile <- here::here('capture.zip')
+  download.file(capture_url, destfile, mode = 'wb')
+  
+  exdir <- here::here('_data/fao_2026/capture')
+  unzip(destfile, exdir = exdir)
+  file.remove(destfile)
+}
+```
+
+```{r}
+aquaculture_q_f <- here::here('_data/fao_2026/aquaculture/Aquaculture_Quantity.csv')
+if(!dir.exists(dirname(aquaculture_q_f))) dir.create(dirname(aquaculture_q_f))
+
+if(!file.exists(aquaculture_q_f)) {
+  aquaculture_url <- 'https://www.fao.org/fishery/static/Data/Aquaculture_2026.1.0.zip'
+  destfile <- here::here('aquaculture.zip')
+  download.file(aquaculture_url, destfile, mode = 'wb')
+  
+  exdir <- here::here('_data/fao_2026/aquaculture')
+  unzip(destfile, exdir = exdir)
+  file.remove(destfile)
+}
+```
+
