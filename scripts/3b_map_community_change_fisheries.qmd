@@ -1,0 +1,573 @@
+---
+title: Map community change - fisheries and aquaculture
+author: "Casey O'Hara"
+format:
+  html:
+    embed-resources: true
+execute:
+    warning: false
+---
+
+## Summary
+
+For each pixel, identify for each scenario the changes in community composition by taxon relative to the current composition.  Here we will focus on marine fisheries and aquaculture spp to see how those spp are changing relative to spp composition overall.
+
+* Count: persistence (current & scenario), colonization (!current & scenario), extirpation (current & !scenario)
+* Turnover: SSI $QS = \frac{2a}{2a + b + c}$ where:
+    * $a$ is species shared by both sites (scenarios) - persistence
+    * $b$ is species unique to first site (current) - extirpation
+    * $c$ is species unique to second site (scenario) - colonization
+
+## Data
+
+* AquaX species distribution models from Reygondeau et al. (2026). AquaX: An enhanced and revised AquaMaps framework to model marine species distributions and biodiversity. PLOS ONE, 21(2), e0335823. https://doi.org/10.1371/journal.pone.0335823
+
+## Methods
+
+* Read in SDMs (by slice) for all species in taxon as long data frame
+* For each scenario, by row (spp and pixel) classify from presence/absence to persistence/colonization/extirpation
+* Group by pixel and classification, and summarize
+* Group by pixel and summarize SSI
+* Save out as raster or parquet.
+
+Once complete for each taxon, then combine and calculate across all taxa.
+
+```{r attach packages}
+#| message: false
+#| 
+library(tidyverse)
+library(here)
+library(arrow)
+library(collapse)
+library(terra)
+library(cowplot)
+
+source(here('common_fxns.R'))
+```
+
+### Gather species, taxa
+
+#### Gather fisheries species and capture/aquaculture amounts
+
+Summarize by global catch and aquaculture production for each spp.  Some cleaning:
+
+* Identify NEI spp as those with `NEI` explicitly, or named `XXX spp.`, or named without a binomial (one term e.g., genus or family).
+* For taxa with two or more related spp, split into individual spp and divide catch among them
+```{r define helper functions}
+get_clean_fao_spp <- function(drop_nei = TRUE) {
+    fao_spp_gps <- read_csv(here('_data/fao_2026/capture/CL_FI_SPECIES_GROUPS.csv'),
+                          show_col_types = FALSE) |>
+      janitor::clean_names() |>
+      rename(sciname = scientific_name, comname = name_en) |>
+      mutate(sciname2 = str_split(sciname, ', ?')) |>
+      unnest(sciname2) |>
+      mutate(sciname2 = str_replace(sciname2, '^[A-Z]\\. ?', 
+                                    paste0(str_extract(sciname, '^[A-z]+'), ' ') )) |>
+      mutate(nei = str_detect(sciname, ' spp$') | 
+              !is.na(comname) & str_detect(comname, 'NEI') |
+              !str_detect(sciname, ' ')) |> 
+      select(sciname = sciname2, comname, species_alpha_3_code = x3a_code, nei) |>
+      clean_fao_aphia_id()
+
+    if(drop_nei) return(fao_spp_gps |> 
+                          filter(!nei) |> 
+                          select(-nei))
+                        
+    ### otherwise: return it all
+    return(fao_spp_gps)
+}
+
+clean_fao_aphia_id <- function(df) {
+  fao_spp_aphia_f <- here('_data/fao_2026/fao_spp_aphiaid.csv')
+  if(!file.exists(fao_spp_aphia_f)) {
+    library(taxize)
+    df_chunks <- df |>
+      filter(!nei) |>
+      mutate(chunk = rep(1:100, length.out = n()))
+    tmp_fstem <- here('tmp/tmp_fao_aphia_%03d.csv')
+    for(i in 1:100) {
+      ### i <- 1
+      message(i)
+      tmp_f <- sprintf(tmp_fstem, i)
+      if(file.exists(tmp_f)) next()
+      tmp_df <- df_chunks |>
+        filter(chunk == i) |>
+        mutate(aphia_id = get_wormsid(sciname, marine_only = FALSE, 
+                                      accepted = TRUE, ask = FALSE)) |>
+        select(sciname, aphia_id) |>
+        distinct()
+      write_csv(tmp_df, tmp_f)
+    }
+    tmp_fs <- list.files('tmp', pattern =  'tmp_fao_aphia_.+.csv', full.names = TRUE)
+    fao_spp_aphia_df <- lapply(
+      X = tmp_fs,
+      FUN = read_csv, show_col_types = FALSE) |>
+    bind_rows()
+    write_csv(fao_spp_aphia_df |> mutate(aphia_id = as.integer(aphia_id)), fao_spp_aphia_f)
+    unlink(tmp_fs)
+  }
+  df <- df |>
+    left_join(read_csv(fao_spp_aphia_f, show_col_types = FALSE),
+              by = 'sciname')
+}
+```
+
+```{r load fao data}
+clean_fao_value <- function(df) {
+
+  df <- df |>
+    janitor::clean_names() |>
+    group_by(species_alpha_3_code, period) |>
+    ### summarize by species ID first
+    summarize(total = sum(value, na.rm = TRUE), .groups = 'drop') |>
+    left_join(get_clean_fao_spp(drop_nei = FALSE), by = 'species_alpha_3_code') |>
+    ### split multi-spp IDs and reallocate catch
+    group_by(species_alpha_3_code, period) |>
+    mutate(total = total / n()) |>
+    ### then group by spp again (since some spp are both solo and in multi spp)
+    group_by(sciname, aphia_id, period, nei) |>
+    summarize(total = sum(total), .groups = 'drop')
+
+}
+
+fao_capture <- read_csv(here('_data/fao_2026/capture/Capture_Quantity.csv')) |>
+  clean_fao_value()
+
+fao_aquacul <- read_csv(here('_data/fao_2026/aquaculture/Aquaculture_Quantity.csv')) |>
+  clean_fao_value()
+
+### What proportion are not differentiated at spp level (e.g., NEI)?
+fao_cap_sum <- fao_capture |>
+  group_by(period, nei) |>
+  summarize(total = sum(total))
+ggplot(fao_cap_sum, aes(x = period, y = total)) +
+  geom_area(aes(fill = nei))
+
+fao_aqua_sum <- fao_aquacul |>
+  group_by(period, nei) |>
+  summarize(total = sum(total))
+ggplot(fao_aqua_sum, aes(x = period, y = total)) +
+  geom_area(aes(fill = nei))
+```
+
+Identify fishery total catch and production for recent five years.  Keep only species with catch or production over some threshold value - let's say 1000 tonnes for catch
+
+```{r identify major marine fisheries and aquaculture spp}
+aquax_meta <- get_aquax_meta() %>%
+  filter(sdm == 'SDM')
+
+fao_fish_df <- fao_capture |>
+  ### drop from here, keep AquaX id
+  select(-aphia_id) |>
+  inner_join(aquax_meta, by = c('sciname' = 'scientific_name')) |>
+  filter(period >= 2020) |>
+  filter(!nei) |>
+  group_by(sciname, aphia_id) |>
+  summarize(mean_catch = mean(total)) |>
+  filter(mean_catch > 1000)
+
+fao_aqua_df <- fao_aquacul |>
+  select(-aphia_id) |>
+  inner_join(aquax_meta, by = c('sciname' = 'scientific_name')) |>
+  filter(period >= 2020) |>
+  filter(!nei) |>
+  group_by(sciname, aphia_id) %>%
+  summarize(mean_prod = mean(total)) |>
+  filter(mean_prod > 1000)
+```
+
+
+### Iterate over taxa
+
+For each taxon, create a composition map.  "Map" is a parquet file containing columns:
+
+* cell_id (integer): id for each pixel (was x, y (numeric): x/y in degrees for a pixel)
+* stat: the statistic described in this observation: n, persistence, colonization, extirpation, SSI
+* rcp45_2050: projected value of this stat for this pixel for this scenario
+* rcp85_2050: projected value of this stat for this pixel for this scenario
+
+
+```{r fisheries}
+capture_id_vec <- fao_fish_df$aphia_id |> unique()
+
+scenario <- c('current', 'rcp45_2050', 'rcp85_2050')
+
+fisheries_turnover_f <- here::here('_output/spp_turnover_maps/fisheries_spp_turnover.parquet') 
+  
+if(!file.exists(fisheries_turnover_f)) {
+
+  message(paste0('Creating ', basename(fisheries_turnover_f), '\n'))
+
+  #######################
+  ### iterate slices  ###
+  #######################
+
+  tmp_out_fstem <- here::here('tmp/tx_turnover/fisheries_turnover_%s.parquet')
+  if(!dir.exists(dirname(tmp_out_fstem))) dir.create(dirname(tmp_out_fstem))
+
+  ### set the number of row slices by cell_id: because cell_id scans rowwise,
+  ### row 1 is 1-7200, 2 is 7201-14400, etc.
+  yslice_w <- 2                 ### width of slices in degrees
+  yslice_n <- 180 / yslice_w    ### number of horizontal slices
+
+  slice_vec <- 1:yslice_n
+
+  for(i in slice_vec) {
+    ### i <- 2
+    ### generate cellrange for this slice of y rows
+    cellrange <- calc_cellrange(i, yslice_w)
+      
+    tmp_out_f <- sprintf(tmp_out_fstem, paste0(cellrange, collapse = '_'))
+    if(file.exists(tmp_out_f)) next()
+    
+    #########################################
+    ### get sdms for this slice and taxon ###
+    #########################################
+    sdm_df <- get_sdm(aphia_id = capture_id_vec, 
+                      scenario = scenario,
+                      cellrange = cellrange,
+                      apply_thresh = TRUE)
+
+    ### FOR EACH SCENARIO:
+    future_scens <- scenario[scenario != 'current']
+
+    ### Reclassify each spp/pixel as persistent, extirpated, or colonized
+    sdm_reclass <- sdm_df %>%
+      ### present = 1, absent = 0
+      fmutate(across(all_of(scenario), \(z) !is.na(z))) %>%
+      ### extirp = 1 + 0 = 1; coloniz = 0 + 2 = 2; persist = 1 + 2 = 3
+      fmutate(across(all_of(future_scens), \(z) .$current + z*2))
+    
+    ### Summarize across species for each pixel
+    reclass_vec <- c('extirpation', 'colonization', 'persistence')
+    sdm_summary <- parallel::mclapply(mc.cores = length(reclass_vec),
+        X = seq_along(reclass_vec),
+        FUN = function(i) {
+          sdm_reclass %>%
+            fgroup_by(cell_id) %>%
+            fsummarize(across(all_of(future_scens), \(z) sum(z == i)))
+        }) %>% 
+      setNames(reclass_vec) %>%
+      collapse::rowbind(idcol = 'stat') %>%
+      fmutate(stat = as.character(stat))
+
+    if(nrow(sdm_summary) == 0) {
+      ### for empty set, write out placeholder files
+        arrow::write_parquet(data.frame(), tmp_out_f)
+        next()
+    }
+    
+    ### Calculate SSI from persistence/extirp/colonization
+    sdm_ssi_df <- parallel::mclapply(mc.cores = length(future_scens),
+        X = future_scens,
+        FUN = function(sc) {
+          ### sc <- future_scens[1]
+          ssi_df <- sdm_summary %>%
+            select(cell_id, stat, scenario = all_of(sc)) %>%
+            pivot_wider(names_from = 'stat', values_from = 'scenario') %>%
+            fmutate(ssi = 2 * persistence / (2 * persistence + extirpation + colonization)) %>%
+            select(cell_id, !!sc := ssi)
+        }) %>%
+      purrr::reduce(.f = full_join, by = c('cell_id')) %>%
+      fmutate(stat = 'ssi')
+      
+    ### write out to tmp file
+    arrow::write_parquet(rowbind(sdm_summary, sdm_ssi_df), tmp_out_f)
+    
+  } ### END ITERATION OVER SLICES
+
+  ##########################################
+  ### assemble slices for taxon turnover ###
+  ##########################################
+
+  tmp_fs <- list.files(dirname(tmp_out_fstem), pattern = 'fisheries_turnover', full.names = TRUE)
+
+  fisheries_turnover_df <- lapply(
+    X = tmp_fs,
+    FUN = arrow::read_parquet,
+  ) %>%
+    rowbind()
+
+  arrow::write_parquet(fisheries_turnover_df, fisheries_turnover_f)
+
+  unlink(tmp_fs)  ### clean up temp directory
+}
+```
+
+```{r aquaculture production}
+capture_id_vec <- fao_aqua_df$aphia_id |> unique()
+
+scenario <- c('current', 'rcp45_2050', 'rcp85_2050')
+
+aquaculture_turnover_f <- here::here('_output/spp_turnover_maps/aquaculture_spp_turnover.parquet') 
+  
+if(!file.exists(aquaculture_turnover_f)) {
+
+  message(paste0('Creating ', basename(aquaculture_turnover_f), '\n'))
+
+  #######################
+  ### iterate slices  ###
+  #######################
+
+  tmp_out_fstem <- here::here('tmp/tx_turnover/aquaculture_turnover_%s.parquet')
+  if(!dir.exists(dirname(tmp_out_fstem))) dir.create(dirname(tmp_out_fstem))
+
+  ### set the number of row slices by cell_id: because cell_id scans rowwise,
+  ### row 1 is 1-7200, 2 is 7201-14400, etc.
+  yslice_w <- 2                 ### width of slices in degrees
+  yslice_n <- 180 / yslice_w    ### number of horizontal slices
+
+  slice_vec <- 1:yslice_n
+
+  for(i in slice_vec) {
+    ### i <- 2
+    ### generate cellrange for this slice of y rows
+    cellrange <- calc_cellrange(i, yslice_w)
+      
+    tmp_out_f <- sprintf(tmp_out_fstem, paste0(cellrange, collapse = '_'))
+    if(file.exists(tmp_out_f)) next()
+    
+    #########################################
+    ### get sdms for this slice and taxon ###
+    #########################################
+    sdm_df <- get_sdm(aphia_id = capture_id_vec, 
+                      scenario = scenario,
+                      cellrange = cellrange,
+                      apply_thresh = TRUE)
+
+    ### FOR EACH SCENARIO:
+    future_scens <- scenario[scenario != 'current']
+
+    ### Reclassify each spp/pixel as persistent, extirpated, or colonized
+    sdm_reclass <- sdm_df %>%
+      ### present = 1, absent = 0
+      fmutate(across(all_of(scenario), \(z) !is.na(z))) %>%
+      ### extirp = 1 + 0 = 1; coloniz = 0 + 2 = 2; persist = 1 + 2 = 3
+      fmutate(across(all_of(future_scens), \(z) .$current + z*2))
+    
+    ### Summarize across species for each pixel
+    reclass_vec <- c('extirpation', 'colonization', 'persistence')
+    sdm_summary <- parallel::mclapply(mc.cores = length(reclass_vec),
+        X = seq_along(reclass_vec),
+        FUN = function(i) {
+          sdm_reclass %>%
+            fgroup_by(cell_id) %>%
+            fsummarize(across(all_of(future_scens), \(z) sum(z == i)))
+        }) %>% 
+      setNames(reclass_vec) %>%
+      collapse::rowbind(idcol = 'stat') %>%
+      fmutate(stat = as.character(stat))
+
+    if(nrow(sdm_summary) == 0) {
+      ### for empty set, write out placeholder files
+        arrow::write_parquet(data.frame(), tmp_out_f)
+        next()
+    }
+    
+    ### Calculate SSI from persistence/extirp/colonization
+    sdm_ssi_df <- parallel::mclapply(mc.cores = length(future_scens),
+        X = future_scens,
+        FUN = function(sc) {
+          ### sc <- future_scens[1]
+          ssi_df <- sdm_summary %>%
+            select(cell_id, stat, scenario = all_of(sc)) %>%
+            pivot_wider(names_from = 'stat', values_from = 'scenario') %>%
+            fmutate(ssi = 2 * persistence / (2 * persistence + extirpation + colonization)) %>%
+            select(cell_id, !!sc := ssi)
+        }) %>%
+      purrr::reduce(.f = full_join, by = c('cell_id')) %>%
+      fmutate(stat = 'ssi')
+      
+    ### write out to tmp file
+    arrow::write_parquet(rowbind(sdm_summary, sdm_ssi_df), tmp_out_f)
+    
+  } ### END ITERATION OVER SLICES
+
+  ##########################################
+  ### assemble slices for taxon turnover ###
+  ##########################################
+
+  tmp_fs <- list.files(dirname(tmp_out_fstem), pattern = 'aquaculture_turnover', full.names = TRUE)
+
+  aquaculture_turnover_df <- lapply(
+    X = tmp_fs,
+    FUN = arrow::read_parquet,
+  ) %>%
+    rowbind()
+
+  arrow::write_parquet(aquaculture_turnover_df, aquaculture_turnover_f)
+
+  unlink(tmp_fs)  ### clean up temp directory
+}
+```
+
+### Write out raster outputs
+
+Reproject lat/long into Behrmann equal area projections for MS figure displays.  For turnover and species richness, save out the results as two-layer raster (one for each future scenario).
+
+```{r}
+base_rast <- rast(ext(-180, 180, -90, 90),
+                  resolution = 0.05,
+                  crs = 'epsg:4326')
+behr_rast <- base_rast %>%
+  project(y = '+proj=cea +lat_ts=30 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs', 
+          res = 5000)
+```
+
+::: panel-tabset
+
+#### Turnover raster
+
+```{r fisheries turnover rasters}
+fisheries_spp_turnover_df <- read_parquet(fisheries_turnover_f) 
+
+turnover_out_f <- here('_output/spp_turnover_maps/fisheries_spp_turnover.tif')
+
+if(!file.exists(turnover_out_f)) {
+
+  ssi_r <- fisheries_spp_turnover_df %>%
+    fsubset(stat == 'ssi') %>%
+    select(-stat) %>%
+    cell_id_to_xy(drop = TRUE) %>%
+    rast(crs = crs(base_rast), ext = ext(base_rast)) %>%
+    project(behr_rast, res = 5000)
+  turnover_r <- 1 - ssi_r
+  writeRaster(turnover_r, turnover_out_f)
+}
+
+plot(rast(turnover_out_f), main = 'fisheries spp turnover')
+ 
+```
+
+```{r aquaculture turnover rasters}
+aquaculture_spp_turnover_df <- read_parquet(aquaculture_turnover_f) 
+
+turnover_out_f <- here('_output/spp_turnover_maps/aquaculture_spp_turnover.tif')
+
+if(!file.exists(turnover_out_f)) {
+
+  ssi_r <- aquaculture_spp_turnover_df %>%
+    fsubset(stat == 'ssi') %>%
+    select(-stat) %>%
+    cell_id_to_xy(drop = TRUE) %>%
+    rast(crs = crs(base_rast), ext = ext(base_rast)) %>%
+    project(behr_rast, res = 5000)
+  turnover_r <- 1 - ssi_r
+  writeRaster(turnover_r, turnover_out_f)
+}
+
+plot(rast(turnover_out_f), main = 'aquaculture spp turnover')
+
+```
+
+#### Turnover raster (extirp only)
+
+```{r fisheries turnover rasters 2}
+
+turnover_ext_out_f <- here('_output/spp_turnover_maps/fisheries_spp_turnover_extirp.tif')
+
+if(!file.exists(turnover_ext_out_f)) {
+  extirp_r <- fisheries_spp_turnover_df %>%
+    fsubset(stat == 'extirpation') %>%
+    select(-stat) %>%
+    cell_id_to_xy(drop = TRUE) %>%
+    rast(crs = crs(base_rast), ext = ext(base_rast)) %>%
+    project(behr_rast, res = 5000)
+
+  coloniz_r <- fisheries_spp_turnover_df %>%
+    fsubset(stat == 'colonization') %>%
+    select(-stat) %>%
+    cell_id_to_xy(drop = TRUE) %>%
+    rast(crs = crs(base_rast), ext = ext(base_rast)) %>%
+    project(behr_rast, res = 5000)
+
+  extirp_ratio <- extirp_r / (extirp_r + coloniz_r)
+
+  turnover_r <- rast(turnover_out_f)
+
+  turnover_ext_r <- turnover_r * extirp_ratio
+  writeRaster(turnover_ext_r, turnover_ext_out_f)
+}
+
+plot(rast(turnover_ext_out_f), main = 'fisheries spp turnover (extirp only)')
+
+```
+
+```{r aquaculture turnover rasters 2}
+
+turnover_ext_out_f <- here('_output/spp_turnover_maps/aquaculture_spp_turnover_extirp.tif')
+
+if(!file.exists(turnover_ext_out_f)) {
+  extirp_r <- aquaculture_spp_turnover_df %>%
+    fsubset(stat == 'extirpation') %>%
+    select(-stat) %>%
+    cell_id_to_xy(drop = TRUE) %>%
+    rast(crs = crs(base_rast), ext = ext(base_rast)) %>%
+    project(behr_rast, res = 5000)
+
+  coloniz_r <- aquaculture_spp_turnover_df %>%
+    fsubset(stat == 'colonization') %>%
+    select(-stat) %>%
+    cell_id_to_xy(drop = TRUE) %>%
+    rast(crs = crs(base_rast), ext = ext(base_rast)) %>%
+    project(behr_rast, res = 5000)
+
+  extirp_ratio <- extirp_r / (extirp_r + coloniz_r)
+
+  turnover_r <- rast(turnover_out_f)
+
+  turnover_ext_r <- turnover_r * extirp_ratio
+  writeRaster(turnover_ext_r, turnover_ext_out_f)
+}
+
+plot(rast(turnover_ext_out_f), main = 'aquaculture spp turnover (extirp only)')
+
+```
+
+#### Spp Richness 
+
+```{r fisheries spp richness rasters}
+spp_rich_out_f <- here('_output/spp_turnover_maps/fisheries_spp_richness.tif')
+
+if(!file.exists(spp_rich_out_f)) {
+  nspp_df <- fisheries_spp_turnover_df %>%
+    pivot_longer(cols = c('rcp45_2050', 'rcp85_2050'), names_to = 'scenario', values_to = 'value') %>%
+    pivot_wider(names_from = stat, values_from = value) %>%
+    fmutate(spp_r_current = persistence + extirpation,
+            spp_r_future  = colonization + persistence) %>%
+    select(cell_id, scenario, spp_r_current, spp_r_future) %>%
+    pivot_wider(names_from = scenario, values_from = spp_r_future)
+
+  nspp_r <- nspp_df %>%
+    cell_id_to_xy(drop = TRUE) %>%
+    rast(crs = crs(base_rast), ext = ext(base_rast)) %>%
+    project(behr_rast, res = 5000)
+
+  writeRaster(round(nspp_r), spp_rich_out_f)
+}
+plot(rast(spp_rich_out_f), main = 'fisheries spp richness')
+
+```
+
+```{r aquaculture spp richness rasters}
+spp_rich_out_f <- here('_output/spp_turnover_maps/aquaculture_spp_richness.tif')
+
+if(!file.exists(spp_rich_out_f)) {
+  nspp_df <- aquaculture_spp_turnover_df %>%
+    pivot_longer(cols = c('rcp45_2050', 'rcp85_2050'), names_to = 'scenario', values_to = 'value') %>%
+    pivot_wider(names_from = stat, values_from = value) %>%
+    fmutate(spp_r_current = persistence + extirpation,
+            spp_r_future  = colonization + persistence) %>%
+    select(cell_id, scenario, spp_r_current, spp_r_future) %>%
+    pivot_wider(names_from = scenario, values_from = spp_r_future)
+
+  nspp_r <- nspp_df %>%
+    cell_id_to_xy(drop = TRUE) %>%
+    rast(crs = crs(base_rast), ext = ext(base_rast)) %>%
+    project(behr_rast, res = 5000)
+
+  writeRaster(round(nspp_r), spp_rich_out_f)
+}
+plot(rast(spp_rich_out_f), main = 'aquaculture spp richness')
+
+```

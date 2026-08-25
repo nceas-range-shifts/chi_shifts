@@ -338,6 +338,204 @@ if(!file.exists(fig_f)) {
 knitr::include_graphics(fig_f)
 ```
 
+#### Focus on   spp: richness and pct change
+```{r fisheries spp richness}
+fig_f <- here('ms_figs/figX_fisheries_spp_richness.png')
+
+if(!file.exists(fig_f)) {
+  nspp_r <- rast(here('_output/spp_turnover_maps/fisheries_spp_richness.tif'))
+
+  ### Diverging palette from magenta to dark green, with yellow tone
+  ### in middle - based on hcl.colors(pal = 'Red-Green')
+  div_pal <- c("#841859", "#FFFFEE", "#005600")
+
+  nspp_df <- as.data.frame(nspp_r, xy = TRUE) %>%
+    fmutate(log_n = log10(spp_r_current),
+            diff_rcp45_2050 = (rcp45_2050 - spp_r_current) / spp_r_current, 
+            diff_rcp85_2050 = (rcp85_2050 - spp_r_current) / spp_r_current) %>%
+    ### Treat anything over 1 as 1(+) (Inf: zero spp now 1), 
+    ### Treat NaN as zero (zero spp still zero)
+    fmutate(diff_rcp45_2050 = case_when((diff_rcp45_2050 > 1) ~ 1,
+                                        is.nan(diff_rcp45_2050) ~ 0,
+                                        TRUE ~ diff_rcp45_2050)) %>%
+    fmutate(diff_rcp85_2050 = case_when((diff_rcp85_2050 > 1) ~ 1,
+                                        is.nan(diff_rcp85_2050) ~ 0,
+                                        TRUE ~ diff_rcp85_2050))
+    
+  nspp_max <- max(nspp_df$spp_r_current)
+  nspp_brks <- seq(1, log10(nspp_max), 1)
+  nspp_panel <- plot_map(data = nspp_df, fill_var = log_n) +
+    scale_fill_viridis_c(breaks = c(0, 1, 2, 3, log10(nspp_max)), 
+                        labels = c(1, 10, 100, 1000, nspp_max)) +
+    theme(text = element_text(size = 9)) +
+    labs(fill = expression(N[spp]))
+
+
+
+  dspp_panel <- plot_map(data = nspp_df, fill_var = diff_rcp45_2050) +
+    scale_fill_gradient2(low = div_pal[1], mid = div_pal[2], 
+                        high = div_pal[3], midpoint = 0,
+                        breaks = c(-1, -.5, 0, .5, 1),
+                        labels = c('-100%', '-50%', '0%', '50%', '≥100%')) +
+    theme(text = element_text(size = 9)) +
+    labs(fill = expression('∆' * N[spp]))
+
+
+  p <- ggdraw() +
+    draw_plot(nspp_panel, x = .02, y = 0.5, height = .5, width = .98) +
+    draw_plot(dspp_panel, x = .02, y = 0.0, height = .5, width = .98) +
+    draw_label('A', x = 0, y = 1.0,  vjust = 1, hjust = 0, size = 14, fontface = 'bold') +
+    draw_label('B', x = 0, y = 0.5, vjust = 1, hjust = 0, size = 14, fontface = 'bold')
+  ggsave(fig_f, height = 6, width = 8, dpi = 300)
+}
+knitr::include_graphics(fig_f)
+```
+
+#### Focus on fisheries spp: relative change vs other spp
+```{r fisheries spp relative change}
+fig_f <- here('ms_figs/figX_fisheries_spp_vs_other_spp.png')
+
+if(!file.exists(fig_f)) {
+  fisheries_r <- rast(here('_output/spp_turnover_maps/fisheries_spp_richness.tif'))
+  all_r  <- rast(here('_output/spp_turnover_maps/all_spp_richness.tif'))
+
+  ### Diverging palette orange-purple to indicate difference from pink-green
+  div_pal <- c("#f1a340", "#f1f1f1", "#998ec3")
+
+  fisheries_df <- as.data.frame(fisheries_r, xy = TRUE) %>%
+    select(x, y, fisheries_current = spp_r_current, fisheries_2050 = rcp45_2050)
+   
+  all_df <- as.data.frame(all_r, xy = TRUE) %>%
+    select(x, y, all_current = spp_r_current, all_2050 = rcp45_2050)
+
+  compare_df <- fisheries_df %>%
+    join(all_df, how = 'full', on = c('x', 'y')) %>%
+    fmutate(other_current = all_current - fisheries_current,
+            other_2050    = all_2050 - fisheries_2050,
+            fisheries_diff     = (fisheries_2050 - fisheries_current) / fisheries_current,
+            other_diff    = (other_2050 - other_current) / other_current) %>%
+    fmutate(delta = fisheries_diff - other_diff,
+            delta = ifelse(delta > 1, 1, delta),
+            delta = ifelse(delta < -1, -1, delta))
+
+  diff_panel <- plot_map(data = compare_df, fill_var = delta) +
+    scale_fill_gradient2(low = div_pal[1], mid = div_pal[2], 
+                        high = div_pal[3], midpoint = 0,
+                        breaks = c(-1, -.5, 0, .5, 1),
+                        labels = c('-100%', '-50%', '0%', '50%', '≥100%')) +
+    theme(text = element_text(size = 9)) +
+    labs(fill = expression('∆' * N[pred] - '∆' * N[other]))
+
+
+  # p <- ggdraw() +
+  #   draw_plot(nspp_panel, x = .02, y = 0.5, height = .5, width = .98) +
+  #   draw_plot(dspp_panel, x = .02, y = 0.0, height = .5, width = .98) +
+  #   draw_label('A', x = 0, y = 1.0,  vjust = 1, hjust = 0, size = 14, fontface = 'bold') +
+  #   draw_label('B', x = 0, y = 0.5, vjust = 1, hjust = 0, size = 14, fontface = 'bold')
+  ggsave(fig_f, height = 3.1, width = 8, dpi = 300)
+}
+knitr::include_graphics(fig_f)
+```
+
+#### Focus on aquaculture spp: richness and pct change
+```{r aquaculture spp richness}
+fig_f <- here('ms_figs/figX_aquaculture_spp_richness.png')
+
+if(!file.exists(fig_f)) {
+  nspp_r <- rast(here('_output/spp_turnover_maps/aquaculture_spp_richness.tif'))
+
+  ### Diverging palette from magenta to dark green, with yellow tone
+  ### in middle - based on hcl.colors(pal = 'Red-Green')
+  div_pal <- c("#841859", "#FFFFEE", "#005600")
+
+  nspp_df <- as.data.frame(nspp_r, xy = TRUE) %>%
+    fmutate(log_n = log10(spp_r_current),
+            diff_rcp45_2050 = (rcp45_2050 - spp_r_current) / spp_r_current, 
+            diff_rcp85_2050 = (rcp85_2050 - spp_r_current) / spp_r_current) %>%
+    ### Treat anything over 1 as 1(+) (Inf: zero spp now 1), 
+    ### Treat NaN as zero (zero spp still zero)
+    fmutate(diff_rcp45_2050 = case_when((diff_rcp45_2050 > 1) ~ 1,
+                                        is.nan(diff_rcp45_2050) ~ 0,
+                                        TRUE ~ diff_rcp45_2050)) %>%
+    fmutate(diff_rcp85_2050 = case_when((diff_rcp85_2050 > 1) ~ 1,
+                                        is.nan(diff_rcp85_2050) ~ 0,
+                                        TRUE ~ diff_rcp85_2050))
+    
+  nspp_max <- max(nspp_df$spp_r_current)
+  nspp_brks <- seq(1, log10(nspp_max), 1)
+  nspp_panel <- plot_map(data = nspp_df, fill_var = log_n) +
+    scale_fill_viridis_c(breaks = c(0, 1, 2, 3, log10(nspp_max)), 
+                        labels = c(1, 10, 100, 1000, nspp_max)) +
+    theme(text = element_text(size = 9)) +
+    labs(fill = expression(N[spp]))
+
+
+
+  dspp_panel <- plot_map(data = nspp_df, fill_var = diff_rcp45_2050) +
+    scale_fill_gradient2(low = div_pal[1], mid = div_pal[2], 
+                        high = div_pal[3], midpoint = 0,
+                        breaks = c(-1, -.5, 0, .5, 1),
+                        labels = c('-100%', '-50%', '0%', '50%', '≥100%')) +
+    theme(text = element_text(size = 9)) +
+    labs(fill = expression('∆' * N[spp]))
+
+
+  p <- ggdraw() +
+    draw_plot(nspp_panel, x = .02, y = 0.5, height = .5, width = .98) +
+    draw_plot(dspp_panel, x = .02, y = 0.0, height = .5, width = .98) +
+    draw_label('A', x = 0, y = 1.0,  vjust = 1, hjust = 0, size = 14, fontface = 'bold') +
+    draw_label('B', x = 0, y = 0.5, vjust = 1, hjust = 0, size = 14, fontface = 'bold')
+  ggsave(fig_f, height = 6, width = 8, dpi = 300)
+}
+knitr::include_graphics(fig_f)
+```
+
+#### Focus on aquaculture spp: relative change vs other spp
+```{r aquaculture spp relative change}
+fig_f <- here('ms_figs/figX_aquaculture_spp_vs_other_spp.png')
+
+if(!file.exists(fig_f)) {
+  aquaculture_r <- rast(here('_output/spp_turnover_maps/aquaculture_spp_richness.tif'))
+  all_r  <- rast(here('_output/spp_turnover_maps/all_spp_richness.tif'))
+
+  ### Diverging palette orange-purple to indicate difference from pink-green
+  div_pal <- c("#f1a340", "#f1f1f1", "#998ec3")
+
+  aquaculture_df <- as.data.frame(aquaculture_r, xy = TRUE) %>%
+    select(x, y, aquaculture_current = spp_r_current, aquaculture_2050 = rcp45_2050)
+   
+  all_df <- as.data.frame(all_r, xy = TRUE) %>%
+    select(x, y, all_current = spp_r_current, all_2050 = rcp45_2050)
+
+  compare_df <- aquaculture_df %>%
+    join(all_df, how = 'full', on = c('x', 'y')) %>%
+    fmutate(other_current = all_current - aquaculture_current,
+            other_2050    = all_2050 - aquaculture_2050,
+            aquaculture_diff     = (aquaculture_2050 - aquaculture_current) / aquaculture_current,
+            other_diff    = (other_2050 - other_current) / other_current) %>%
+    fmutate(delta = aquaculture_diff - other_diff,
+            delta = ifelse(delta > 1, 1, delta),
+            delta = ifelse(delta < -1, -1, delta))
+
+  diff_panel <- plot_map(data = compare_df, fill_var = delta) +
+    scale_fill_gradient2(low = div_pal[1], mid = div_pal[2], 
+                        high = div_pal[3], midpoint = 0,
+                        breaks = c(-1, -.5, 0, .5, 1),
+                        labels = c('-100%', '-50%', '0%', '50%', '≥100%')) +
+    theme(text = element_text(size = 9)) +
+    labs(fill = expression('∆' * N[pred] - '∆' * N[other]))
+
+
+  # p <- ggdraw() +
+  #   draw_plot(nspp_panel, x = .02, y = 0.5, height = .5, width = .98) +
+  #   draw_plot(dspp_panel, x = .02, y = 0.0, height = .5, width = .98) +
+  #   draw_label('A', x = 0, y = 1.0,  vjust = 1, hjust = 0, size = 14, fontface = 'bold') +
+  #   draw_label('B', x = 0, y = 0.5, vjust = 1, hjust = 0, size = 14, fontface = 'bold')
+  ggsave(fig_f, height = 3.1, width = 8, dpi = 300)
+}
+knitr::include_graphics(fig_f)
+```
+
 ### Map of turnover
 
 Compare species and FE turnover in a single plot, just examining RCP 4.5 (8.5 can go in SI?)
