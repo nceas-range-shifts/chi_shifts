@@ -115,16 +115,32 @@ df %>%
   select(loss, phylum) %>%
   table()
 
-### losses vs range size
+### losses vs depth zone
 df %>%
   group_by(loss) %>%
   summarize(mean_range = mean(range_pixels),
             sd_range = sd(range_pixels),
             depth_shallow = mean(depth_range_shallow, na.rm = TRUE),
-            depth_deep    = mean(depth_range_deep, na.rm = TRUE))
+            depth_deep    = mean(depth_range_deep, na.rm = TRUE),
+            pct_pelagic   = sum(pelagic) / n(),
+            n = n())
+
+### losses vs range size
+df %>%
+  mutate(depth_min = ifelse(is.na(depth_range_shallow), depth_range_deep, depth_range_shallow)) %>%
+  mutate(loss = ifelse(is.na(depth_min) | depth_min > 200, FALSE, loss)) %>%
+  group_by(loss) %>%
+  summarize(mean_range = mean(range_pixels),
+            sd_range = sd(range_pixels),
+            depth_shallow = mean(depth_range_shallow, na.rm = TRUE),
+            depth_deep    = mean(depth_range_deep, na.rm = TRUE),
+            pct_pelagic   = sum(pelagic) / n(),
+            n = n())
 ```
 
 For this cell, most of the losses are pelagic spp, not demersal/benthic spp; plenty of chordata lost not just invertebrates; no major difference in mean range size... lost spp are generally shallower than non-lost spp.
+
+BUT: if you force deeper spp to remain, the proportion of lost spp goes from 71% to 42%
 
 Check, are the temperature swings/shifts higher here in the mid-Indian Ocean than along coastlines?
 
@@ -207,3 +223,58 @@ ggplot(mean_t_df_agg, aes(x, y, fill = val)) +
 The `surf_max_diff` shows that the surface temperatures are changing faster than the bottom temperatures, particularly for deeper areas.  In shallower areas (e.g., Coral Sea) the changes are more subdued, since the bottom temperatures are closer to the surface and thus more likely to also increase a bit (though still less than surface).  This is pretty intuitive.  
 
 But since pelagic spp are modeled using surface temps while benthic are modeled using bottom temps (verify this is fully accurate!) that could be driving the loss of pelagic spp relative to benthic spp.
+
+### Check all sampled cells
+
+From the Indian Ocean sampled cell, we saw that many deep water pelagics are projected to disappear.  But if we overturn losses of spp below 200 m, we see a dramatic change in turnover.
+
+```{r}
+df <- sdm_results %>%
+  filter(cell_id %in% cellcheck_cells[1:3]) %>%
+  mutate(loss = !is.na(current) & is.na(rcp45_2050)) 
+
+### losses vs depth zone
+df %>%
+  group_by(cell_id) %>%
+  mutate(n_spp = n()) %>%
+  group_by(cell_id, loss) %>%
+  summarize(mean_range = mean(range_pixels),
+            sd_range = sd(range_pixels),
+            depth_shallow = mean(depth_range_shallow, na.rm = TRUE),
+            depth_deep    = mean(depth_range_deep, na.rm = TRUE),
+            pct_pelagic   = sum(pelagic) / n(),
+            pct = n() / first(n_spp), 
+            .groups = 'drop') %>% knitr::kable(digits = 3)
+
+### losses vs range size
+df %>%
+  mutate(depth_min = ifelse(is.na(depth_range_shallow), depth_range_deep, depth_range_shallow)) %>%
+  mutate(loss = ifelse(is.na(depth_min) | depth_min > 200, FALSE, loss)) %>%
+  group_by(cell_id) %>%
+  mutate(n_spp = n()) %>%
+  group_by(cell_id, loss) %>%
+  summarize(mean_range = mean(range_pixels),
+            sd_range = sd(range_pixels),
+            depth_shallow = mean(depth_range_shallow, na.rm = TRUE),
+            depth_deep    = mean(depth_range_deep, na.rm = TRUE),
+            pct_pelagic   = sum(pelagic) / n(),
+            pct = n() / first(n_spp), 
+            .groups = 'drop') %>% knitr::kable(digits = 3)
+```
+
+For this cell, most of the losses are pelagic spp, not demersal/benthic spp; plenty of chordata lost not just invertebrates; no major difference in mean range size... lost spp are generally shallower than non-lost spp.
+
+BUT: if you force deeper spp to remain, the proportion of lost spp goes from 71% to 42%
+
+
+### Can we exclude mesopelagics?
+
+What info is available in AquaX metadata to identify and potentially exclude deep water pelagics?
+
+```{r}
+depth_df <- aquax_meta |> 
+  select(aphia_id, starts_with('depth'), contains('pelagic'),
+         demersal, benthic, neritic, oceanic, coastal, bathyal, abyssal_hadal)
+
+summary(depth_df)
+```

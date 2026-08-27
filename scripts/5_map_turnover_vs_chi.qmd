@@ -133,6 +133,8 @@ land_sf <- read_sf(here('_data/eezs/esri_world_continents.gpkg')) %>%
 ### cancer: 2907724.47007114; capricorn: -2907275.52992886
 
 plot_map <- function(data, fill_var) {
+  data <- data |>
+    filter(!is.na({{ fill_var }}))
   ggplot() +
     geom_raster(data = data, aes(x, y, fill = {{ fill_var }})) +
     ### continents:
@@ -171,6 +173,7 @@ if(!file.exists(fig_f)) {
             diff_rcp85_2050 = (rcp85_2050 - spp_r_current) / spp_r_current) %>%
     ### Treat anything over 1 as 1(+) (Inf: zero spp now 1), 
     ### Treat NaN as zero (zero spp still zero)
+    fmutate(log_n = ifelse(is.infinite(log_n), NA, log_n)) |>
     fmutate(diff_rcp45_2050 = case_when((diff_rcp45_2050 > 1) ~ 1,
                                         is.nan(diff_rcp45_2050) ~ 0,
                                         TRUE ~ diff_rcp45_2050)) %>%
@@ -182,6 +185,7 @@ if(!file.exists(fig_f)) {
     fmutate(log_n = log10(fe_r_current),
             diff_rcp45_2050 = (rcp45_2050 - fe_r_current) / fe_r_current, 
             diff_rcp85_2050 = (rcp85_2050 - fe_r_current) / fe_r_current) %>% 
+    fmutate(log_n = ifelse(is.infinite(log_n), NA, log_n)) |>
     fmutate(diff_rcp45_2050 = case_when((diff_rcp45_2050 > 1) ~ 1,
                                         is.nan(diff_rcp45_2050) ~ 0,
                                         TRUE ~ diff_rcp45_2050)) %>%
@@ -192,7 +196,7 @@ if(!file.exists(fig_f)) {
   nspp_max <- max(nspp_df$spp_r_current)
   nfe_max  <- max(nfe_df$fe_r_current)
   
-  nspp_panel <- plot_map(data = nspp_df, 
+  nspp_panel <- plot_map(data = nspp_df |> filter(!is.infinite(log_n)), 
                          fill_var = log_n) +
     scale_fill_viridis_c(breaks = c(0, 1, 2, 3, log10(nspp_max)), 
                          labels = c(1, 10, 100, 1000, nspp_max)) +
@@ -256,6 +260,7 @@ if(!file.exists(fig_f)) {
             diff_rcp85_2050 = (rcp85_2050 - spp_r_current) / spp_r_current) %>%
     ### Treat anything over 1 as 1(+) (Inf: zero spp now 1), 
     ### Treat NaN as zero (zero spp still zero)
+    fmutate(log_n = ifelse(is.infinite(log_n), NA, log_n)) |>
     fmutate(diff_rcp45_2050 = case_when((diff_rcp45_2050 > 1) ~ 1,
                                         is.nan(diff_rcp45_2050) ~ 0,
                                         TRUE ~ diff_rcp45_2050)) %>%
@@ -338,7 +343,7 @@ if(!file.exists(fig_f)) {
 knitr::include_graphics(fig_f)
 ```
 
-#### Focus on   spp: richness and pct change
+#### Focus on spp: richness and pct change
 ```{r fisheries spp richness}
 fig_f <- here('ms_figs/figX_fisheries_spp_richness.png')
 
@@ -355,6 +360,7 @@ if(!file.exists(fig_f)) {
             diff_rcp85_2050 = (rcp85_2050 - spp_r_current) / spp_r_current) %>%
     ### Treat anything over 1 as 1(+) (Inf: zero spp now 1), 
     ### Treat NaN as zero (zero spp still zero)
+    fmutate(log_n = ifelse(is.infinite(log_n), NA, log_n)) |>
     fmutate(diff_rcp45_2050 = case_when((diff_rcp45_2050 > 1) ~ 1,
                                         is.nan(diff_rcp45_2050) ~ 0,
                                         TRUE ~ diff_rcp45_2050)) %>%
@@ -454,6 +460,7 @@ if(!file.exists(fig_f)) {
             diff_rcp85_2050 = (rcp85_2050 - spp_r_current) / spp_r_current) %>%
     ### Treat anything over 1 as 1(+) (Inf: zero spp now 1), 
     ### Treat NaN as zero (zero spp still zero)
+    fmutate(log_n = ifelse(is.infinite(log_n), NA, log_n)) |>
     fmutate(diff_rcp45_2050 = case_when((diff_rcp45_2050 > 1) ~ 1,
                                         is.nan(diff_rcp45_2050) ~ 0,
                                         TRUE ~ diff_rcp45_2050)) %>%
