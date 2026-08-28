@@ -48,20 +48,22 @@ source(here('common_fxns.R'))
 ### Gather species, taxa, and vulnerability scores
 
 ```{r gather data}
-available_spp <- list.files(here_aquax('SDM')) %>% 
-  str_extract('[0-9]+') %>% 
+available_spp <- list.files(here_aquax('SDM')) |> 
+  str_extract('[0-9]+') |> 
   as.numeric()
-aquax_meta <- get_aquax_meta() %>%
-  filter(aphia_id %in% available_spp)
-spp_id_tx_df <- get_spp_vuln() %>%
+aquax_meta <- get_aquax_meta() |>
+  filter(aphia_id %in% available_spp) |> 
+  cut_problem_depths()
+
+spp_id_tx_df <- get_spp_vuln() |>
   ### spp vuln includes the taxa we want
-  select(aphia_id, taxon) %>%
+  select(aphia_id, taxon) |>
   distinct()
 
-spp_tx_df <- aquax_meta %>% 
-  left_join(spp_id_tx_df) %>%
-  mutate(taxon = ifelse(is.na(taxon), 'other_inverts', taxon)) %>%
-  select(aphia_id, taxon) %>%
+spp_tx_df <- aquax_meta |> 
+  left_join(spp_id_tx_df, by = 'aphia_id') |>
+  mutate(taxon = ifelse(is.na(taxon), 'other_inverts', taxon)) |>
+  select(aphia_id, taxon) |>
   distinct()
 ```
 
@@ -76,7 +78,7 @@ For each taxon, create a composition map.  "Map" is a parquet file containing co
 * rcp85_2050: projected value of this stat for this pixel for this scenario
 
 ```{r iterate over taxa}
-tx_vec <- spp_tx_df$taxon %>% unique() %>% sort()
+tx_vec <- spp_tx_df$taxon |> unique() |> sort()
 
 scenario <- c('current', 'rcp45_2050', 'rcp85_2050')
 
@@ -90,7 +92,7 @@ for(tx in tx_vec) {
 
   message(paste0('Creating ', basename(out_f), '\n'))
 
-  tx_df <- spp_tx_df %>%
+  tx_df <- spp_tx_df |>
       filter(taxon == tx)
   
   #########################################
@@ -103,7 +105,7 @@ for(tx in tx_vec) {
   ### set the number of row slices by cell_id: because cell_id scans rowwise,
   ### row 1 is 1-7200, 2 is 7201-14400, etc.
   yslice_w <- ifelse(tx == 'fish', 2, 5)  ### slice width in degrees (fish is huge taxon, smaller slices!)
-  yslice_n <- 180 / yslice_w              ### number of vertical slices
+  yslice_n <- 180 / yslice_w              ### number of horizontal slices
 
   slice_vec <- 1:yslice_n
 
@@ -118,7 +120,7 @@ for(tx in tx_vec) {
     #########################################
     ### get sdms for this slice and taxon ###
     #########################################
-    sdm_df <- get_sdm(aphia_id = tx_df$aphia_id %>% unique(), 
+    sdm_df <- get_sdm(aphia_id = tx_df$aphia_id |> unique(), 
                       scenario = scenario,
                       cellrange = cellrange,
                       apply_thresh = TRUE)
@@ -127,9 +129,9 @@ for(tx in tx_vec) {
     future_scens <- scenario[scenario != 'current']
 
     ### Reclassify each spp/pixel as persistent, extirpated, or colonized
-    sdm_reclass <- sdm_df %>%
+    sdm_reclass <- sdm_df |>
       ### present = 1, absent = 0
-      fmutate(across(all_of(scenario), \(z) !is.na(z))) %>%
+      fmutate(across(all_of(scenario), \(z) !is.na(z))) %>% ### magrittr for .$ notation
       ### extirp = 1 + 0 = 1; coloniz = 0 + 2 = 2; persist = 1 + 2 = 3
       fmutate(across(all_of(future_scens), \(z) .$current + z*2))
     
@@ -138,12 +140,12 @@ for(tx in tx_vec) {
     sdm_summary <- parallel::mclapply(mc.cores = length(reclass_vec),
         X = seq_along(reclass_vec),
         FUN = function(i) {
-          sdm_reclass %>%
-            fgroup_by(cell_id) %>%
+          sdm_reclass |>
+            fgroup_by(cell_id) |>
             fsummarize(across(all_of(future_scens), \(z) sum(z == i)))
-        }) %>% 
-      setNames(reclass_vec) %>%
-      collapse::rowbind(idcol = 'stat') %>%
+        }) |> 
+      setNames(reclass_vec) |>
+      collapse::rowbind(idcol = 'stat') |>
       fmutate(stat = as.character(stat))
 
     if(nrow(sdm_summary) == 0) {
@@ -157,13 +159,13 @@ for(tx in tx_vec) {
         X = future_scens,
         FUN = function(sc) {
           ### sc <- future_scens[1]
-          ssi_df <- sdm_summary %>%
-            select(cell_id, stat, scenario = all_of(sc)) %>%
-            pivot_wider(names_from = 'stat', values_from = 'scenario') %>%
-            fmutate(ssi = 2 * persistence / (2 * persistence + extirpation + colonization)) %>%
+          ssi_df <- sdm_summary |>
+            select(cell_id, stat, scenario = all_of(sc)) |>
+            pivot_wider(names_from = 'stat', values_from = 'scenario') |>
+            fmutate(ssi = 2 * persistence / (2 * persistence + extirpation + colonization)) |>
             select(cell_id, !!sc := ssi)
-        }) %>%
-      purrr::reduce(.f = full_join, by = c('cell_id')) %>%
+        }) |>
+      purrr::reduce(.f = full_join, by = c('cell_id')) |>
       fmutate(stat = 'ssi')
       
     ### write out to tmp file
@@ -180,7 +182,7 @@ for(tx in tx_vec) {
   complete_tx_turnover_df <- lapply(
     X = tmp_fs,
     FUN = arrow::read_parquet,
-  ) %>%
+  ) |>
     rowbind()
 
   arrow::write_parquet(complete_tx_turnover_df, out_f)
@@ -192,7 +194,7 @@ for(tx in tx_vec) {
 
 ### Combine taxa maps
 
-```{r}
+```{r combine maps}
 
 all_spp_turnover_f <- here('_output/spp_turnover_maps/all_spp_community_change.parquet')
 
@@ -200,29 +202,32 @@ if(!file.exists(all_spp_turnover_f)) {
   tx_map_fs <- list.files(here('_output/spp_turnover_maps/turnover_by_taxon'), 
                         pattern = 'tx_turnover.+.parquet', full.names = TRUE)
   
-  tx_vec <- basename(tx_map_fs) %>% str_remove_all('tx_turnover_|.parquet')
+  tx_vec <- basename(tx_map_fs) |> str_remove_all('tx_turnover_|.parquet')
   
   tx_maps <- lapply(X = tx_map_fs, 
                     FUN = \(z) {
-                      read_parquet(z) %>%
+                      read_parquet(z) |>
                         pivot_wider(names_from = stat, values_from = c(rcp45_2050, rcp85_2050))
-                      }) %>%
-    setNames(tx_vec) %>%
+                      }) |>
+    setNames(tx_vec) |>
     rowbind(idcol = 'taxon')
   
-  all_maps <- tx_maps %>%
-    fgroup_by(cell_id) %>%
+  all_maps <- tx_maps |>
+    fgroup_by(cell_id) |>
     fsummarize(across(-c(cell_id, taxon), sum))
   
-  pers_colo_extirp <- all_maps %>%
-    select(-contains('ssi')) %>%
-    setNames(str_replace(names(.), '2050_', '2050X')) %>%
+  pers_colo_extirp <- all_maps |>
+    setNames(str_replace(names(all_maps), '2050_', '2050X')) |>
+    select(-contains('ssi')) |>
+    ### names_to = '.value' to keep portion of existing col names
     pivot_longer(cols = -c(cell_id), names_to = c('.value', 'stat'), names_sep = 'X')
   
-  ssi_df <- all_maps %>%
-    fmutate(rcp45_2050 = 2 * rcp45_2050_persistence / (2 * rcp45_2050_persistence + rcp45_2050_extirpation + rcp45_2050_colonization),
-            rcp85_2050 = 2 * rcp85_2050_persistence / (2 * rcp85_2050_persistence + rcp85_2050_extirpation + rcp85_2050_colonization)) %>%
-    select(cell_id, rcp45_2050, rcp85_2050) %>%
+  ssi_df <- all_maps |>
+    fmutate(rcp45_2050 = 2 * rcp45_2050_persistence / 
+              (2 * rcp45_2050_persistence + rcp45_2050_extirpation + rcp45_2050_colonization),
+            rcp85_2050 = 2 * rcp85_2050_persistence / 
+              (2 * rcp85_2050_persistence + rcp85_2050_extirpation + rcp85_2050_colonization)) |>
+    select(cell_id, rcp45_2050, rcp85_2050) |>
     fmutate(stat = 'ssi')
   
   all_spp_turnover <- rowbind(pers_colo_extirp, ssi_df)
@@ -239,7 +244,7 @@ Reproject lat/long into Behrmann equal area projections for MS figure displays. 
 base_rast <- rast(ext(-180, 180, -90, 90),
                   resolution = 0.05,
                   crs = 'epsg:4326')
-behr_rast <- base_rast %>%
+behr_rast <- base_rast |>
   project(y = '+proj=cea +lat_ts=30 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs', 
           res = 5000)
 ```
@@ -255,17 +260,17 @@ turnover_out_f <- here('_output/spp_turnover_maps/all_spp_turnover.tif')
 
 if(!file.exists(turnover_out_f)) {
 
-  ssi_r <- all_spp_turnover_df %>%
-    fsubset(stat == 'ssi') %>%
-    select(-stat) %>%
-    cell_id_to_xy(drop = TRUE) %>%
-    rast(crs = crs(base_rast), ext = ext(base_rast)) %>%
+  ssi_r <- all_spp_turnover_df |>
+    fsubset(stat == 'ssi') |>
+    select(-stat) |>
+    cell_id_to_xy(drop = TRUE) |>
+    rast(crs = crs(base_rast), ext = ext(base_rast)) |>
     project(behr_rast, res = 5000)
   turnover_r <- 1 - ssi_r
   writeRaster(turnover_r, turnover_out_f)
 }
-
-plot(rast(turnover_out_f), main = 'spp turnover')
+r <- rast(turnover_out_f)
+plot(r, main = paste('spp turnover', names(r)))
 
 ```
 
@@ -276,18 +281,18 @@ plot(rast(turnover_out_f), main = 'spp turnover')
 turnover_ext_out_f <- here('_output/spp_turnover_maps/all_spp_turnover_extirp.tif')
 
 if(!file.exists(turnover_ext_out_f)) {
-  extirp_r <- all_spp_turnover_df %>%
-    fsubset(stat == 'extirpation') %>%
-    select(-stat) %>%
-    cell_id_to_xy(drop = TRUE) %>%
-    rast(crs = crs(base_rast), ext = ext(base_rast)) %>%
+  extirp_r <- all_spp_turnover_df |>
+    fsubset(stat == 'extirpation') |>
+    select(-stat) |>
+    cell_id_to_xy(drop = TRUE) |>
+    rast(crs = crs(base_rast), ext = ext(base_rast)) |>
     project(behr_rast, res = 5000)
 
-  coloniz_r <- all_spp_turnover_df %>%
-    fsubset(stat == 'colonization') %>%
-    select(-stat) %>%
-    cell_id_to_xy(drop = TRUE) %>%
-    rast(crs = crs(base_rast), ext = ext(base_rast)) %>%
+  coloniz_r <- all_spp_turnover_df |>
+    fsubset(stat == 'colonization') |>
+    select(-stat) |>
+    cell_id_to_xy(drop = TRUE) |>
+    rast(crs = crs(base_rast), ext = ext(base_rast)) |>
     project(behr_rast, res = 5000)
 
   extirp_ratio <- extirp_r / (extirp_r + coloniz_r)
@@ -297,9 +302,8 @@ if(!file.exists(turnover_ext_out_f)) {
   turnover_ext_r <- turnover_r * extirp_ratio
   writeRaster(turnover_ext_r, turnover_ext_out_f)
 }
-
-plot(rast(turnover_ext_out_f), main = 'spp turnover (extirp only)')
-
+r <- rast(turnover_ext_out_f)
+plot(r, main = paste('spp turn (extirp only)', names(r)))
 ```
 
 #### Spp Richness 
@@ -308,22 +312,22 @@ plot(rast(turnover_ext_out_f), main = 'spp turnover (extirp only)')
 spp_rich_out_f <- here('_output/spp_turnover_maps/all_spp_richness.tif')
 
 if(!file.exists(spp_rich_out_f)) {
-  nspp_df <- all_spp_turnover_df %>%
-    pivot_longer(cols = c('rcp45_2050', 'rcp85_2050'), names_to = 'scenario', values_to = 'value') %>%
-    pivot_wider(names_from = stat, values_from = value) %>%
+  nspp_df <- all_spp_turnover_df |>
+    pivot_longer(cols = c('rcp45_2050', 'rcp85_2050'), names_to = 'scenario', values_to = 'value') |>
+    pivot_wider(names_from = stat, values_from = value) |>
     fmutate(spp_r_current = persistence + extirpation,
-            spp_r_future  = colonization + persistence) %>%
-    select(cell_id, scenario, spp_r_current, spp_r_future) %>%
+            spp_r_future  = colonization + persistence) |>
+    select(cell_id, scenario, spp_r_current, spp_r_future) |>
     pivot_wider(names_from = scenario, values_from = spp_r_future)
 
-  nspp_r <- nspp_df %>%
-    cell_id_to_xy(drop = TRUE) %>%
-    rast(crs = crs(base_rast), ext = ext(base_rast)) %>%
+  nspp_r <- nspp_df |>
+    cell_id_to_xy(drop = TRUE) |>
+    rast(crs = crs(base_rast), ext = ext(base_rast)) |>
     project(behr_rast, res = 5000)
 
   writeRaster(round(nspp_r), spp_rich_out_f)
 }
-plot(rast(spp_rich_out_f), main = 'spp richness')
-
+r <- rast(spp_rich_out_f)
+plot(r, main = paste('spp richness', names(r)))
 ```
 

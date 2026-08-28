@@ -278,3 +278,11 @@ depth_df <- aquax_meta |>
 
 summary(depth_df)
 ```
+
+
+```{r}
+old_map <- rast(here('_output_pre_depth/spp_turnover_maps/all_spp_turnover.tif'))
+new_map <- rast(here('_output/spp_turnover_maps/all_spp_turnover.tif'))
+
+compare_maps <- c(old_map[[1]], new_map[[1]])
+```

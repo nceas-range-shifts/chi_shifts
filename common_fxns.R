@@ -15,6 +15,14 @@ get_aquax_meta <- function(meta = 'META_02122025.Rdata', sdm = TRUE) {
   return(meta_clean)
 }
 
+cut_problem_depths <- function(meta) {
+  ### * Keep all benthic/demersal spp regardless of depth
+  ### * Keep all neritic species
+  ### * Keep all species whose max depth is 200m or less (epipelagic)
+  meta |> 
+    filter((neritic == 1) | depth_range_deep <= 200 | benthic == 1 | demersal == 1)
+}
+
 get_spp_traits <- function() {
   ### run data mgmt scripts first!
   traits_dir <- here::here('_data/ohara_2024/spp_vuln_framework_traits')
