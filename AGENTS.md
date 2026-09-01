@@ -49,3 +49,4 @@ Rasters/tables use a global lon-lat grid, default resolution `res = 0.05`, `ncol
 - Before overwriting or deleting existing files in `_data/`, `_output/`, or elsewhere, confirm with the user first — these are expensive to regenerate.
 - Do not assume `_data_raw/` still exists; all raw and processed data now live under a single `_data/` directory (as of the recent consolidation).
 - When adding new grid-indexed data, follow the existing `cell_id`/`x`/`y` conventions above rather than introducing a new indexing scheme.
+- Do not read in data files (.csv, .parquet) as input tokens unless explicitly asked to do so.

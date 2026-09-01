@@ -155,8 +155,10 @@ t_2050 <- c('2050-01-01T00:00:00Z', '2050-01-01T00:00:00Z')
 rast_out_fstem <- here('tmp/cell_turnover_exploration/rast_%s.tif')
 
 rast_out_fs <- sprintf(rast_out_fstem, c('current_depthmax',
+                                         'current_depthmean',
                                          'current_depthsurf',
                                          '2050_depthmax',
+                                         '2050_depthmean',
                                          '2050_depthsurf'))
 if(any(!file.exists(rast_out_fs))) {
   temp_max_current  <- download_layers('thetao_baseline_2000_2019_depthmax', 
@@ -164,24 +166,43 @@ if(any(!file.exists(rast_out_fs))) {
                                                          longitude = lon,
                                                          time = t_2010))
   writeRaster(temp_max_current, rast_out_fs[1], overwrite = TRUE)
+  temp_mean_current <- download_layers('thetao_baseline_2000_2019_depthmean', 
+                                      constraints = list(latitude = lat,
+                                                         longitude = lon,
+                                                         time = t_2010))
+  writeRaster(temp_mean_current, rast_out_fs[2], overwrite = TRUE)
   temp_surf_current <- download_layers('thetao_baseline_2000_2019_depthsurf', 
                                       constraints = list(latitude = lat,
                                                          longitude = lon,
                                                          time = t_2010))
-  writeRaster(temp_surf_current, rast_out_fs[2], overwrite = TRUE)
+  writeRaster(temp_surf_current, rast_out_fs[3], overwrite = TRUE)
   temp_max_2050     <- download_layers('thetao_ssp245_2020_2100_depthmax', 
                                       constraints = list(latitude = lat, longitude = lon, time = t_2050))
-  writeRaster(temp_max_2050, rast_out_fs[3], overwrite = TRUE)
+  writeRaster(temp_max_2050, rast_out_fs[4], overwrite = TRUE)
+  temp_mean_2050    <- download_layers('thetao_ssp245_2020_2100_depthmean', 
+                                      constraints = list(latitude = lat, longitude = lon, time = t_2050))
+  writeRaster(temp_mean_2050, rast_out_fs[5], overwrite = TRUE)
   temp_surf_2050    <- download_layers('thetao_ssp245_2020_2100_depthsurf', 
                                       constraints = list(latitude = lat, longitude = lon, time = t_2050))
-  writeRaster(temp_surf_2050, rast_out_fs[4], overwrite = TRUE)
+  writeRaster(temp_surf_2050, rast_out_fs[6], overwrite = TRUE)
 }
 
 temp_max_current  <- rast(rast_out_fs[1])
-temp_surf_current <- rast(rast_out_fs[2])
-temp_max_2050     <- rast(rast_out_fs[3])[[1:6]] ### drop sd
-temp_surf_2050    <- rast(rast_out_fs[4])[[1:6]] ### drop sd
+temp_mean_current <- rast(rast_out_fs[2])
+temp_surf_current <- rast(rast_out_fs[3])
+temp_max_2050     <- rast(rast_out_fs[4])[[1:6]] ### drop sd
+temp_mean_2050    <- rast(rast_out_fs[5])[[1:6]] ### drop sd
+temp_surf_2050    <- rast(rast_out_fs[6])[[1:6]] ### drop sd
+```
 
+How different are the depthmean and depthsurf layers?
+```{r}
+surf_btm <- temp_surf_current - temp_max_current
+mid_btm  <- temp_mean_current - temp_max_current
+plot(surf_btm[[4]])
+plot(mid_btm[[4]])
+```
+```{r}
 diff_rasts_mid  <- c(temp_max_2050 - temp_max_current)
 diff_rasts_surf <- c(temp_surf_2050 - temp_surf_current)
 plot(diff_rasts_mid); plot(diff_rasts_surf)
@@ -285,4 +306,13 @@ old_map <- rast(here('_output_pre_depth/spp_turnover_maps/all_spp_turnover.tif')
 new_map <- rast(here('_output/spp_turnover_maps/all_spp_turnover.tif'))
 
 compare_maps <- c(old_map[[1]], new_map[[1]])
+```
+
+```{r}
+old_map <- rast(here('_output_pre_depth/spp_turnover_maps/apex_spp_turnover.tif'))
+new_map <- rast(here('_output/spp_turnover_maps/apex_spp_turnover.tif'))
+
+compare_maps <- c(old_map[[1]], new_map[[1]])
+plot(compare_maps)
+plot(old_map[[1]] - new_map[[1]])
 ```
