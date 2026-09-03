@@ -1,0 +1,468 @@
+---
+title: Map vulnerability and impacts - fisheries
+author: "Casey O'Hara"
+format:
+  html:
+    embed-resources: true
+execute:
+    warning: false
+---
+
+## Summary
+
+Try prototyping with EcoOcean model (and maybe total biomass from BOATS, instead of/alongside biomass density):
+
+* **Vulnerability**: Using FAO info, identify currently-fished species - and then use the distributions and "biomass removal" vulnerability scores for these species to find average vulnerability in the different size classes and water column positions (we have trait values for these for most spp)
+    * i.e., we'll have fisheries vulnerability maps for 6 groups: sm/med/lg pelagics and sm/med/lg demersals.
+    * Alternately, instead of using FAO info to identify currently-fished species, just throw all species into the mix - i.e., all small pelagics drive the vuln scores, instead of just the currently-fished small pelagics.
+* **Stressor reference points**: I think the ratio of fished biomass to unfished biomass is the starting point for a reference point
+    * **Max stressor**: If we set max stressor (stressor = 1) to say 99th percentile of B_{fished}/B_{unfished}, that seems like a typical starting point
+        * But, should there be consideration for total biomass instead of just the ratio?  A few low-biomass pixels with high fishing might (or might not) drive it if we ignore total biomass, or emphasize high fishing on high-biomass/high-productivity areas if we include it
+        * My thought is to include total biomass if possible, but soften it with a log transform, so something like: (_biomass density (fished)_ / _biomass density (unfished)_) * log(_unfished biomass_) (and then do like 99th percentile)
+    * ** Min stressor**: 
+        * If we use a B/BMSY type of reference, say BMSY = 35-40% of unfished biomass, then that says that fishing at BMSY (or lower intensity) is a stressor of 0
+        * If we use unfished biomass as a reference, then fishing at B/BMSY would still be a pretty substantial stressor
+        * My inclination is use unfished biomass - taking out half the fish, even if sustainable over time, imposes an impact
+* **Stressor intensity**: once reference points are established, we calculate the fished/unfished ratios for the various size/location groups as six separate layers
+* **Impact**:  Once we have stressor intensity layers for each subgroup, we then apply the vulnerability scores for each of those layers to calc impact for each size/location group
+    * We could keep each layer as a separate stressor, or take a biomass density-weighted mean for the overall impact
+
+
+## Data
+
+* vulnerability maps generated in 2_map_vulnerability_stressor_all_spp.qmd
+* stressor maps generated in XXXX
+
+## Methods
+
+* Read in SDMs for multiple species as long data frame
+* Group by pixel and summarize stats.
+* Save out as raster or parquet.
+
+```{r attach packages}
+#| message: false
+#| 
+library(tidyverse)
+library(here)
+library(arrow)
+library(collapse)
+library(here)
+library(terra)
+
+source(here('common_fxns.R'))
+```
+
+### Identify fisheries classes
+
+ISIMIP models break fishery species into size classes (<30 cm, 30-90 cm, >90 cm) and pelagic/demersal.  
+
+* Identify all fished species from FAO, and for each, classify into these different classes.
+* For each class, generate a biomass removal vulnerability map.  Should this be weighted by FAO species catch?
+
+```{r define FAO helper functions}
+get_clean_fao_spp <- function(drop_nei = TRUE) {
+    fao_spp_gps <- read_csv(here('_data/fao_2026/capture/CL_FI_SPECIES_GROUPS.csv'),
+                          show_col_types = FALSE) |>
+      janitor::clean_names() |>
+      rename(sciname = scientific_name, comname = name_en) |>
+      mutate(sciname2 = str_split(sciname, ', ?')) |>
+      unnest(sciname2) |>
+      mutate(sciname2 = str_replace(sciname2, '^[A-Z]\\. ?', 
+                                    paste0(str_extract(sciname, '^[A-z]+'), ' ') )) |>
+      mutate(nei = str_detect(sciname, ' spp$') | 
+              !is.na(comname) & str_detect(comname, 'NEI') |
+              !str_detect(sciname, ' ')) |> 
+      select(sciname = sciname2, comname, species_alpha_3_code = x3a_code, nei) |>
+      clean_fao_aphia_id()
+
+    if(drop_nei) return(fao_spp_gps |> 
+                          filter(!nei) |> 
+                          select(-nei))
+                        
+    ### otherwise: return it all
+    return(fao_spp_gps)
+}
+
+clean_fao_aphia_id <- function(df) {
+  fao_spp_aphia_f <- here('_data/fao_2026/fao_spp_aphiaid.csv')
+  if(!file.exists(fao_spp_aphia_f)) {
+    library(taxize)
+    df_chunks <- df |>
+      filter(!nei) |>
+      mutate(chunk = rep(1:100, length.out = n()))
+    tmp_fstem <- here('tmp/tmp_fao_aphia_%03d.csv')
+    for(i in 1:100) {
+      ### i <- 1
+      message(i)
+      tmp_f <- sprintf(tmp_fstem, i)
+      if(file.exists(tmp_f)) next()
+      tmp_df <- df_chunks |>
+        filter(chunk == i) |>
+        mutate(aphia_id = get_wormsid(sciname, marine_only = FALSE, 
+                                      accepted = TRUE, ask = FALSE)) |>
+        select(sciname, aphia_id) |>
+        distinct()
+      write_csv(tmp_df, tmp_f)
+    }
+    tmp_fs <- list.files('tmp', pattern =  'tmp_fao_aphia_.+.csv', full.names = TRUE)
+    fao_spp_aphia_df <- lapply(
+      X = tmp_fs,
+      FUN = read_csv, show_col_types = FALSE) |>
+    bind_rows()
+    write_csv(fao_spp_aphia_df |> mutate(aphia_id = as.integer(aphia_id)), fao_spp_aphia_f)
+    unlink(tmp_fs)
+  }
+  df <- df |>
+    left_join(read_csv(fao_spp_aphia_f, show_col_types = FALSE),
+              by = 'sciname')
+}
+```
+
+```{r load fao data}
+clean_fao_value <- function(df) {
+
+  df <- df |>
+    janitor::clean_names() |>
+    group_by(species_alpha_3_code, period) |>
+    ### summarize by species ID first
+    summarize(total = sum(value, na.rm = TRUE), .groups = 'drop') |>
+    left_join(get_clean_fao_spp(drop_nei = FALSE), by = 'species_alpha_3_code') |>
+    ### split multi-spp IDs and reallocate catch
+    group_by(species_alpha_3_code, period) |>
+    mutate(total = total / n()) |>
+    ### then group by spp again (since some spp are both solo and in multi spp)
+    group_by(sciname, aphia_id, period, nei) |>
+    summarize(total = sum(total), .groups = 'drop')
+
+}
+
+fao_capture <- read_csv(here('_data/fao_2026/capture/Capture_Quantity.csv')) |>
+  clean_fao_value()
+
+### What proportion are not differentiated at spp level (e.g., NEI)?
+fao_cap_sum <- fao_capture |>
+  group_by(period, nei) |>
+  summarize(total = sum(total))
+ggplot(fao_cap_sum, aes(x = period, y = total)) +
+  geom_area(aes(fill = nei))
+
+fao_spp <- fao_capture |>
+  filter(period > 2000 & !nei & !is.na(aphia_id)) %>%
+  group_by(sciname, aphia_id) %>%
+  summarize(mean_catch = mean(total, na.rm = TRUE), .groups = 'drop')
+```
+
+Which of these species are mapped in AquaX?  Match to Aphia ID.  Then bind traits for body size and water column position, and group species into the size/position classes.
+
+
+```{r}
+aquax_meta <- get_aquax_meta()
+size_df  <- read_csv(here('_data/ohara_2024/funct_entity_traits/fe_spp_traits.csv')) |>
+  mutate(size = case_when(length_cm < 30 ~ 'sm',
+                          length_cm < 90 ~ 'md',
+                          !is.na(length_cm) ~ 'lg',
+                          TRUE ~ 'oops')) |> 
+  select(aphia_id, size) |>
+  distinct()
+
+fao_aquax <- fao_spp |> 
+  inner_join(aquax_meta, by = c('aphia_id', 'sciname' = 'scientific_name')) |>
+  mutate(position = ifelse(pelagic, 'pelagic', 'demersal')) %>%
+  select(aphia_id, sciname, mean_catch, position) %>%
+  left_join(size_df, by = 'aphia_id') |>
+  mutate(class = paste(size, position, sep = '_'))
+
+### Some moderately-fished spp without size info - update FishBase data?
+# check_nas <- fao_aquax %>% 
+#   filter(is.na(size)) |>
+#   filter(mean_catch > 100)
+
+biomass_removal_vuln_df <- get_spp_vuln() |>
+  filter(stressor == 'biomass_removal') |>
+  select(aphia_id, vuln)
+
+fao_aquax_vuln_df <- fao_aquax |> 
+  filter(!is.na(size)) |>
+  left_join(biomass_removal_vuln_df, by = 'aphia_id')
+
+# fao_aquax_vuln_df$class %>% table()
+
+```
+
+### Iterate over classes to develop vulnerability maps
+
+```{r define vulnerability helper functions}
+
+process_slice <- function(sdm_df, vuln_df, scenario, digits = NULL) {
+  ### if no observations in this slice, move along
+  if(nrow(sdm_df) == 0) return(data.frame())
+  
+  ### join with vuln scores - use %>% to support .$ call
+  sdm_spp_vuln <- sdm_df %>%
+    collapse::join(vuln_df |> select(aphia_id, vuln), 
+                   how = 'left', on = 'aphia_id', verbose = FALSE) %>%
+    collapse::fmutate(across(.cols = all_of(scenario), .fns = \(x) x * .$vuln))
+  
+  ### calc summary stats including higher moments
+  sdm_tx_vuln_array <- sdm_spp_vuln |>
+    fgroup_by(cell_id) |>
+    qsu(higher = FALSE) ### drop skew and kurtosis
+
+  ### convert qsu output into df for each scenario, then join all scenarios
+  sdm_tx_vuln_df <- lapply(X = scenario, 
+                           FUN = pull_scenario_stats, 
+                           d_array = sdm_tx_vuln_array) |>
+    ### purrr::reduce to apply full join programmatically across all scenarios
+    purrr::reduce(.f = full_join, by = c('cell_id', 'stat'))
+  if(!is.null(digits)) {
+    sdm_tx_vuln_df <- sdm_tx_vuln_df |>
+      ### collapse::fmutate doesn't understand this syntax alas
+      collapse::fmutate(across(.cols = all_of(scenario), .fns = round, digits = digits))
+  }
+  return(sdm_tx_vuln_df)
+}
+
+pull_scenario_stats <- function(sc, d_array) {
+  df <- d_array[ , , sc] |>
+    as.data.frame() |>
+    janitor::clean_names() |>
+    ### the qsu seems to fill in zero where no observations...
+    ### drop those obs here, let the purrr::reduce fill in values as NA
+    collapse::fsubset(n > 0) |>
+    ### drop min and max values... keep mean, sd, skew, kurtosis, n
+    select(-min, -max) |>
+    ### qsu creates a group column representing cell_id
+    rename(cell_id = variable) |>
+    pivot_longer(cols = -cell_id, names_to = 'stat', values_to = sc) |>
+    collapse::fmutate(cell_id = as.integer(as.character(cell_id)))
+
+  return(df)
+}
+```
+
+```{r iterate over size classes}
+size_classes <- fao_aquax_vuln_df$class %>% unique()
+
+for(size_class in size_classes) {
+  ### size_class <- 'lg_demersal'
+
+  out_fstem <- here('_output/vuln_maps/biomass_removal/biomass_removal_vuln_%s.parquet') 
+  if(!dir.exists(dirname(out_fstem))) dir.create(dirname(out_fstem))
+   
+  out_f <- sprintf(out_fstem, size_class)
+  
+  if(file.exists(out_f)) next()
+    
+  message(paste0('Creating ', basename(out_f), '\n'))
+
+  class_vuln_df <- fao_aquax_vuln_df |>
+      fsubset(class == size_class)
+  
+  #####################################
+  ### iterate slices for size class ###
+  #####################################
+  
+  tmp_out_fstem <- here('tmp/tx_vuln/tmp_biomass_removal_vuln_%s_%s.parquet')
+  if(!dir.exists(dirname(tmp_out_fstem))) dir.create(dirname(tmp_out_fstem))
+  
+  ### set the number of row slices by cell_id: because cell_id scans rowwise,
+  ### row 1 is 1-7200, 2 is 7201-14400, etc.
+  yslice_w <- 5                ### slice width in degrees
+  yslice_n <- 180 / yslice_w   ### number of vertical slices
+
+  slice_vec <- 1:yslice_n
+
+  for(i in slice_vec) {
+    ### i <- 2
+    ### generate cellrange for this slice of y rows
+    cellrange <- calc_cellrange(i, yslice_w)
+    
+    ### Check for existing temp files - if all exist, skip to next slice
+    slice_tmp_out_f <- sprintf(tmp_out_fstem, size_class, paste0(cellrange, collapse = '_'))
+    if(file.exists(slice_tmp_out_f)) next()
+
+    #########################################
+    ### get sdms for this slice and class ###
+    #########################################
+    scenario = c('current', 'rcp45_2050', 'rcp85_2050')
+    sdm_df <- get_sdm(aphia_id = class_vuln_df$aphia_id |> unique(), 
+                      scenario = scenario,
+                      cellrange = cellrange,
+                      apply_thresh = TRUE)
+    
+    # message('Calculating ', basename(tmp_out_f))
+    sdm_vuln_df <- process_slice(sdm_df = sdm_df,
+                                 vuln_df = class_vuln_df,
+                                 scenario = scenario,
+                                 digits = 4)
+    ### write out to tmp file
+    arrow::write_parquet(sdm_vuln_df, slice_tmp_out_f)
+    
+  } ### END ITERATION OVER SLICES
+
+  ##########################################
+  ###   assemble slices for size class   ###
+  ##########################################
+
+  tmp_fs <- list.files(dirname(tmp_out_fstem), 
+                       pattern = sprintf('biomass_removal_vuln_%s', size_class), 
+                       full.names = TRUE)
+  ### drop any tiny files (499 B is an empty file)
+  tmp_fs_clean <- tmp_fs[file.size(tmp_fs) > 500]
+  
+  ###########################################
+  ### gather all maps for this size class ###
+  ###########################################
+  complete_sdm_vuln_df <- arrow::open_dataset(tmp_fs_clean, format = 'parquet') |>
+    collect() 
+
+  ####################################################
+  ### save nspp separately ONCE if not yet created ###
+  ####################################################
+  class_spp_rich_f <- sprintf(here('_output/vuln_maps/biomass_removal/spp_richness_by_size_class',
+                                   'spp_richness_%s.parquet'), size_class)
+  if(!dir.exists(dirname(class_spp_rich_f))) dir.create(dirname(class_spp_rich_f))
+
+  if(!file.exists(class_spp_rich_f)) {
+    spp_richness <- complete_sdm_vuln_df |>
+      collapse::fsubset(stat == 'n') |>
+      select(-stat) |>
+      fmutate(across(-cell_id, as.integer))
+    arrow::write_parquet(spp_richness, class_spp_rich_f)
+  }
+  
+  #################################################
+  ### drop nspp stat and save out for str/taxon ###
+  #################################################
+  complete_drop_n <- complete_sdm_vuln_df |>
+    collapse::fsubset(stat != 'n')
+  
+  arrow::write_parquet(complete_drop_n, out_f)
+  
+  unlink(tmp_fs)  ### clean up temp directory
+  
+} ### END LOOP over size classes
+```
+
+### Process Fisheries Stressors
+
+```{r}
+fish_rast_df <- data.frame(file = list.files(here('_data/isimip_2026/rasts'), full.names = TRUE)) |> 
+  mutate(base_f = basename(file)) |> 
+  separate_wider_delim(
+    base_f, 
+    names = c('mdl', 'sys_mdl', NA, 'clim_scen', 'fish_scen', NA, 'var', NA, NA, 'yr_start', 'yr_end'), 
+    delim = '_')
+```
+
+Try processing the demersal layers.  Monthly from 2015-01-01 to 2100-12-01.  Units are in g m^-2^.
+
+```{r raster processing function}
+grab_rast_layers <- function(c = 'ssp585', f, v, y = c(2046, 2055)) {
+  rast_f <- fish_rast_df |> 
+    filter(clim_scen == c & fish_scen == f & var == v) |> 
+    pull(file)
+  r <- rast(rast_f)
+
+  r_time <- time(r)
+  yrs    <- as.numeric(format(r_time, "%Y"))
+
+  idx <- which(yrs >= min(y) & yrs <= max(y))
+  r_sub <- r[[idx]]
+
+  return(r_sub)
+}
+
+calc_stressor <- function(c = 'ssp585', v, y = c(2046, 2055)) {
+  ### unfished and fished biomass density
+  bd_unfished_r <- grab_rast_layers(c, f = 'nat', v, y) |> mean()
+  bd_fished_r <- grab_rast_layers(c, f = '2015soc-from-histsoc', v, y) |> mean()
+  ratio <- (bd_unfished_r - bd_fished_r) / (bd_unfished_r)
+
+  ratio[ratio < 0] <- 0 ### some anomalous negative values in there
+
+  ### Normalize to 1 at the 99.9th percentile observed  
+  ref <- quantile(values(ratio), .999, na.rm = TRUE)
+  str_r <- ratio / ref
+  str_r[str_r > 1] <- 1
+
+  names(str_r) <- paste0('str_intensity_', v)
+  return(str_r)
+}
+
+coast_fill <- function(r, w = 3, iter = 5) {
+  if(iter == 1) {
+    r_focal <- focal(r, w = 3, fun = "mean", na.policy = "only", na.rm = TRUE)
+
+    r_filled <- cover(r, r_focal)
+    ### cover() returns r where r is non-NA, and r_focal elsewhere
+    return(r_filled)
+  }
+
+  r_filled <- r
+
+  for (i in seq_len(iter)) {
+    na_count_before <- global(is.na(r_filled), "sum")[[1]]
+    r_focal  <- focal(r_filled, w = 3, fun = "mean", na.policy = "only", na.rm = TRUE)
+    r_filled <- cover(r_filled, r_focal)
+    na_count_after <- global(is.na(r_filled), "sum")[[1]]
+    message(sprintf("Iter %d: %d NAs -> %d NAs", i, na_count_before, na_count_after))
+    if (na_count_after == 0 || na_count_after == na_count_before) break
+  }
+  return(r_filled)
+}
+```
+
+Fisheries stressor per size/position class $c$ is based on the proportion of biomass removed.
+
+$$BD_{c}^{removed} = \frac{BD_c^{unfished} - BD_c^{fished}}{BD_c^{unfished}}$$
+
+This ratio is normalized by the 99.9th percentile value as reference point.  Later we may weight the percentile using unfished biomass.  The `collapse::fquantile` function has a `w`eights argument.  
+
+NOTE: We don't want to combine layers at the stressor intensity level - first apply the vulnerability scores, then combine the impact layers.
+
+```{r calc stressor intensities}
+str_dsm <- calc_stressor(v = 'bd30cm')
+str_dmd <- calc_stressor(v = 'bd30to90cm')
+str_dlg <- calc_stressor(v = 'bd90cm')
+
+str_psm <- calc_stressor(v = 'bp30cm')
+str_pmd <- calc_stressor(v = 'bp30to90cm')
+str_plg <- calc_stressor(v = 'bp90cm')
+
+ocean_r <- get_ocean_rast()
+### consolidate stressor rasts and project  to Behrmann
+str_r <- c(str_dlg, str_plg, str_dmd, str_pmd, str_dsm, str_psm) |>
+  coast_fill(iter = 5) |>
+  project(ocean_r)
+
+### Mask to just ocean cells
+str_r <- mask(str_r, ocean_r)
+### check if any ocean cells have no stressor value (coastal mismatch)
+check_r <- mask(ocean_r, str_r, inverse = TRUE)
+if(any(!is.na(values(check_r)))) stop('Coastal mismatch between stressors and ocean rast')
+```
+
+```{r}
+vuln_r_fs <- list.files(here('_output/vuln_maps/biomass_removal'), pattern = '.parquet$', full.names = TRUE)
+
+vuln_r_list <- lapply(vuln_r_fs, FUN = parquet_to_rast, param = 'mean', scenario = 'rcp45_2050') 
+vuln_r <- do.call(c, vuln_r_list) |> 
+  setNames(str_remove_all(basename(vuln_r_fs), '.+_vuln_|.parquet'))
+```
+
+The vulnerability layers, based on currently-fished species, have large gaps in some cases.  If these align with zero-value stressors, great, otherwise some gapfilling will need to occur.
+
+
+```{r}
+sm <- grab_rast_layers(f = 'nat', v = 'bd30cm') |> mean()
+md <- grab_rast_layers(f = 'nat', v = 'bd30to90cm') |> mean()
+lg <- grab_rast_layers(f = 'nat', v = 'bd90cm') |> mean()
+
+sm_wt <- sm / (sm + md + lg)
+md_wt <- md / (sm + md + lg)
+lg_wt <- lg / (sm + md + lg)
+
+overall_str_dem <- bdsm_str * sm_wt + bdmd_str * md_wt + bdlg_str * lg_wt
+```
+

@@ -162,6 +162,38 @@ xy_to_cell_id <- function(df, x_col = 'x', y_col = 'y', res = 0.05, drop = TRUE)
   return(df)
 }
 
+parquet_to_rast <- function(f, param = NULL, scenario = NULL, behrmann = TRUE) {
+  df <- read_parquet(f)
+  if('stat' %in% names(df)) {
+    if(is.null(param)) param = 'mean'
+    df <- df |> 
+      fsubset(stat == param) |> 
+      select(-stat)
+  }
+  if(is.null(scenario)) {
+    scenario <- names(df)[!names(df) %in% c('cell_id')]
+  }
+  r <- df |>
+    cell_id_to_xy() |>
+    select(x, y, all_of(scenario)) |>
+    rast() |>
+    extend(ext(-180, 180, -90, 90))
+  crs(r) <- 'epsg:4326'
+  if(behrmann) {
+    ocean_r <- get_ocean_rast()
+    r <- project(r, ocean_r)
+  }
+  return(r)
+}
+
+get_ocean_rast <- function() {
+  ### use nspp tif file and flatten to ocean cells - note, all layers
+  ### have zero instead of NA for ocean cells with no spp
+  r <- rast(here::here('_output/spp_turnover_maps/all_spp_richness.tif'))[[1]]
+  r[!is.na(r)] <- 1
+  names(r) <- 'ocean'
+  return(r)
+}
 
 sample_decomp <- function(df) {
   ### MAJOR REWRITE - full vectorization and use of
