@@ -1,0 +1,188 @@
+---
+title: Map vulnerability and impacts - fisheries
+author: "Casey O'Hara"
+format:
+  html:
+    embed-resources: true
+execute:
+    warning: false
+---
+
+## Summary
+
+Try prototyping with EcoOcean model (and maybe total biomass from BOATS, instead of/alongside biomass density).  Process rasters into analysis grid (Behrmann, 5 km resolution).  Gapfill as needed.
+
+* **Stressor reference points**: I think the ratio of fished biomass to unfished biomass is the starting point for a reference point
+    * **Max stressor**: If we set max stressor (stressor = 1) to say 99th percentile of B_{fished}/B_{unfished}, that seems like a typical starting point
+        * But, should there be consideration for total biomass instead of just the ratio?  A few low-biomass pixels with high fishing might (or might not) drive it if we ignore total biomass, or emphasize high fishing on high-biomass/high-productivity areas if we include it
+        * My thought is to include total biomass if possible, but soften it with a log transform, so something like: (_biomass density (fished)_ / _biomass density (unfished)_) * log(_unfished biomass_) (and then do like 99th percentile)
+    * ** Min stressor**: 
+        * If we use a B/BMSY type of reference, say BMSY = 35-40% of unfished biomass, then that says that fishing at BMSY (or lower intensity) is a stressor of 0
+        * If we use unfished biomass as a reference, then fishing at B/BMSY would still be a pretty substantial stressor
+        * My inclination is use unfished biomass - taking out half the fish, even if sustainable over time, imposes an impact
+* **Stressor intensity**: once reference points are established, we calculate the fished/unfished ratios for the various size/location groups as six separate layers
+
+
+## Data
+
+* fisheries models from ISIMIP: .nc files from https://data.isimip.org/search/tree/ISIMIP3b
+* See `data_access_fisheries` script for download
+* NetCDF files stored in `_data/isimip_2026/rasts/` with `_data/isimip_2026/filelist.txt` for filenames
+* file names key: `ecoocean_gfdl-esm4_nobasd_ssp585_2015soc-from-histsoc_default_bd30cm_global_monthly_2015_2100.nc`
+    * Model (`ecoocean`)
+    * Earth system model (`gfdl-esm4`)
+    * bias correction (`nobasd`)
+    * climate scenario (SSP5-8.5)
+    * fishery scenario (`2015soc-from-histso`: carry forward from 2015; `nat`: no fishing)
+    * parameters (default)
+    * variable (`b`iomass density, `d`emersal/`p`elagic, `30cm`/`30to90cm`/`90cm`)
+    * scope (global)
+    * period (monthly)
+    * date range (2015-2100)
+
+## Methods
+
+```{r attach packages}
+#| message: false
+#| 
+library(tidyverse)
+library(here)
+library(arrow)
+library(collapse)
+library(here)
+library(terra)
+
+source(here('common_fxns.R'))
+```
+
+
+### Process Fisheries Stressors
+
+```{r}
+fish_rast_df <- data.frame(file = list.files(here('_data/isimip_2026/rasts'), full.names = TRUE)) |> 
+  mutate(base_f = basename(file)) |> 
+  separate_wider_delim(
+    base_f, 
+    names = c('mdl', 'sys_mdl', NA, 'clim_scen', 'fish_scen', NA, 'var', NA, NA, 'yr_start', 'yr_end'), 
+    delim = '_')
+```
+
+Try processing the demersal layers.  Monthly from 2015-01-01 to 2100-12-01.  Units are in g m^-2^.
+
+```{r raster processing function}
+grab_rast_layers <- function(c = 'ssp585', f, v, y = c(2046, 2055)) {
+  rast_f <- fish_rast_df |> 
+    filter(clim_scen == c & fish_scen == f & var == v) |> 
+    pull(file)
+  r <- rast(rast_f)
+
+  r_time <- time(r)
+  yrs    <- as.numeric(format(r_time, "%Y"))
+
+  idx <- which(yrs >= min(y) & yrs <= max(y))
+  r_sub <- r[[idx]]
+
+  return(r_sub)
+}
+
+calc_stressor <- function(c = 'ssp585', v, y = c(2046, 2055)) {
+  ### unfished and fished biomass density
+  bd_unfished_r <- grab_rast_layers(c, f = 'nat', v, y) |> mean()
+  bd_fished_r <- grab_rast_layers(c, f = '2015soc-from-histsoc', v, y) |> mean()
+  ratio <- (bd_unfished_r - bd_fished_r) / (bd_unfished_r)
+
+  ratio[ratio < 0] <- 0 ### some anomalous negative values in there
+
+  ### Normalize to 1 at the 99.9th percentile observed  
+  ref <- quantile(values(ratio), .999, na.rm = TRUE)
+  str_r <- ratio / ref
+  str_r[str_r > 1] <- 1
+
+  names(str_r) <- paste0('str_intensity_', v)
+  return(str_r)
+}
+
+rast_gapfill <- function(r, w = 3, iter = 5) {
+  if(iter == 1) {
+    r_focal <- focal(r, w = 3, fun = "mean", na.policy = "only", na.rm = TRUE)
+
+    r_filled <- cover(r, r_focal)
+    ### cover() returns r where r is non-NA, and r_focal elsewhere
+    return(r_filled)
+  }
+
+  r_filled <- r
+
+  for (i in seq_len(iter)) {
+    na_count_before <- global(is.na(r_filled), "sum")[[1]]
+    r_focal  <- focal(r_filled, w = 3, fun = "mean", na.policy = "only", na.rm = TRUE)
+    r_filled <- cover(r_filled, r_focal)
+    na_count_after <- global(is.na(r_filled), "sum")[[1]]
+    message(sprintf("Iter %d: %d NAs -> %d NAs\n", i, na_count_before, na_count_after))
+    if (all(na_count_after == 0 | na_count_after == na_count_before)) break
+  }
+  return(r_filled)
+}
+```
+
+Fisheries stressor per size/position class $c$ is based on the proportion of biomass removed.
+
+$$BD_{c}^{removed} = \frac{BD_c^{unfished} - BD_c^{fished}}{BD_c^{unfished}}$$
+
+This ratio is normalized by the 99.9th percentile value as reference point.  Later we may weight the percentile using unfished biomass.  The `collapse::fquantile` function has a `w`eights argument.  
+
+NOTE: We don't want to combine layers at the stressor intensity level - first apply the vulnerability scores, then combine the impact layers.
+
+```{r calc stressor intensities}
+str_dsm <- calc_stressor(v = 'bd30cm')
+str_dmd <- calc_stressor(v = 'bd30to90cm')
+str_dlg <- calc_stressor(v = 'bd90cm')
+
+str_psm <- calc_stressor(v = 'bp30cm')
+str_pmd <- calc_stressor(v = 'bp30to90cm')
+str_plg <- calc_stressor(v = 'bp90cm')
+
+ocean_r <- get_ocean_rast()
+### consolidate stressor rasts and project  to Behrmann
+str_r <- c(str_dlg, str_plg, str_dmd, str_pmd, str_dsm, str_psm) |>
+  rast_gapfill(iter = 5) |>
+  project(ocean_r)
+
+### Mask to just ocean cells
+str_r <- mask(str_r, ocean_r)
+
+### any unfilled ocean cells?  inverse mask result against ocean rast
+# check_result <- mask(ocean_r, str_r, inverse = TRUE)
+# sum(!is.na(values(check_result)))
+# # [1] 0
+```
+
+```{r}
+vuln_r_fs <- list.files(here('_output/vuln_maps/biomass_removal'), 
+                        pattern = '.parquet$', full.names = TRUE)
+
+vuln_r_list <- lapply(vuln_r_fs, FUN = parquet_to_rast, param = 'mean', scenario = 'rcp45_2050')
+
+vuln_r <- do.call(c, vuln_r_list) |> 
+  setNames(str_remove_all(basename(vuln_r_fs), '.+_vuln_|.parquet'))
+```
+
+The vulnerability layers, based on currently-fished species, have large gaps in some cases.  If these align with zero-value stressors, great, otherwise some gapfilling will need to occur.
+
+```{r check stressor vs vuln gaps}
+vuln_r_filled <- rast_gapfill(vuln_r, iter = 20)
+check_r <- mask(str_r, vuln_r_filled, inverse = TRUE)
+```
+
+```{r}
+sm <- grab_rast_layers(f = 'nat', v = 'bd30cm') |> mean()
+md <- grab_rast_layers(f = 'nat', v = 'bd30to90cm') |> mean()
+lg <- grab_rast_layers(f = 'nat', v = 'bd90cm') |> mean()
+
+sm_wt <- sm / (sm + md + lg)
+md_wt <- md / (sm + md + lg)
+lg_wt <- lg / (sm + md + lg)
+
+overall_str_dem <- bdsm_str * sm_wt + bdmd_str * md_wt + bdlg_str * lg_wt
+```
+

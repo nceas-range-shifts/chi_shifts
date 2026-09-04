@@ -1,5 +1,5 @@
 ---
-title: Map vulnerability and impacts - fisheries
+title: Map vulnerability - fisheries
 author: "Casey O'Hara"
 format:
   html:
@@ -10,34 +10,26 @@ execute:
 
 ## Summary
 
-Try prototyping with EcoOcean model (and maybe total biomass from BOATS, instead of/alongside biomass density):
 
-* **Vulnerability**: Using FAO info, identify currently-fished species - and then use the distributions and "biomass removal" vulnerability scores for these species to find average vulnerability in the different size classes and water column positions (we have trait values for these for most spp)
-    * i.e., we'll have fisheries vulnerability maps for 6 groups: sm/med/lg pelagics and sm/med/lg demersals.
-    * Alternately, instead of using FAO info to identify currently-fished species, just throw all species into the mix - i.e., all small pelagics drive the vuln scores, instead of just the currently-fished small pelagics.
-* **Stressor reference points**: I think the ratio of fished biomass to unfished biomass is the starting point for a reference point
-    * **Max stressor**: If we set max stressor (stressor = 1) to say 99th percentile of B_{fished}/B_{unfished}, that seems like a typical starting point
-        * But, should there be consideration for total biomass instead of just the ratio?  A few low-biomass pixels with high fishing might (or might not) drive it if we ignore total biomass, or emphasize high fishing on high-biomass/high-productivity areas if we include it
-        * My thought is to include total biomass if possible, but soften it with a log transform, so something like: (_biomass density (fished)_ / _biomass density (unfished)_) * log(_unfished biomass_) (and then do like 99th percentile)
-    * ** Min stressor**: 
-        * If we use a B/BMSY type of reference, say BMSY = 35-40% of unfished biomass, then that says that fishing at BMSY (or lower intensity) is a stressor of 0
-        * If we use unfished biomass as a reference, then fishing at B/BMSY would still be a pretty substantial stressor
-        * My inclination is use unfished biomass - taking out half the fish, even if sustainable over time, imposes an impact
-* **Stressor intensity**: once reference points are established, we calculate the fished/unfished ratios for the various size/location groups as six separate layers
-* **Impact**:  Once we have stressor intensity layers for each subgroup, we then apply the vulnerability scores for each of those layers to calc impact for each size/location group
-    * We could keep each layer as a separate stressor, or take a biomass density-weighted mean for the overall impact
+Using FAO info, identify currently-fished species - and then use the distributions and "biomass removal" vulnerability scores for these species to find average vulnerability in the different size classes and water column positions (we have trait values for these for most spp)
+
+* i.e., we'll have fisheries vulnerability maps for 6 groups: sm/med/lg pelagics and sm/med/lg demersals.
+* Alternately, instead of using FAO info to identify currently-fished species, just throw all species into the mix - i.e., all small pelagics drive the vuln scores, instead of just the currently-fished small pelagics.
 
 
 ## Data
 
-* vulnerability maps generated in 2_map_vulnerability_stressor_all_spp.qmd
-* stressor maps generated in XXXX
+FAO capture data: https://www.fao.org/fishery/collection/capture/en and https://www.fao.org/fishery/collection/aquaculture/en.  Here we are only interested in which species exist in the
+
+* Taxonomic information stored in `_data/fao_2026/capture/CL_FI_SPECIES_GROUPS.csv`
+* Catch information stored in `_data/fao_2026/capture/Capture_Quantity.csv`
+* See `data_access_fisheries` script for download.
 
 ## Methods
 
 * Read in SDMs for multiple species as long data frame
 * Group by pixel and summarize stats.
-* Save out as raster or parquet.
+* Save out as parquet.
 
 ```{r attach packages}
 #| message: false
@@ -116,9 +108,7 @@ clean_fao_aphia_id <- function(df) {
     left_join(read_csv(fao_spp_aphia_f, show_col_types = FALSE),
               by = 'sciname')
 }
-```
 
-```{r load fao data}
 clean_fao_value <- function(df) {
 
   df <- df |>
@@ -135,6 +125,9 @@ clean_fao_value <- function(df) {
     summarize(total = sum(total), .groups = 'drop')
 
 }
+```
+
+```{r load fao data}
 
 fao_capture <- read_csv(here('_data/fao_2026/capture/Capture_Quantity.csv')) |>
   clean_fao_value()
@@ -153,7 +146,6 @@ fao_spp <- fao_capture |>
 ```
 
 Which of these species are mapped in AquaX?  Match to Aphia ID.  Then bind traits for body size and water column position, and group species into the size/position classes.
-
 
 ```{r}
 aquax_meta <- get_aquax_meta()
@@ -344,102 +336,9 @@ for(size_class in size_classes) {
 } ### END LOOP over size classes
 ```
 
-### Process Fisheries Stressors
+### Gapfill
 
-```{r}
-fish_rast_df <- data.frame(file = list.files(here('_data/isimip_2026/rasts'), full.names = TRUE)) |> 
-  mutate(base_f = basename(file)) |> 
-  separate_wider_delim(
-    base_f, 
-    names = c('mdl', 'sys_mdl', NA, 'clim_scen', 'fish_scen', NA, 'var', NA, NA, 'yr_start', 'yr_end'), 
-    delim = '_')
-```
-
-Try processing the demersal layers.  Monthly from 2015-01-01 to 2100-12-01.  Units are in g m^-2^.
-
-```{r raster processing function}
-grab_rast_layers <- function(c = 'ssp585', f, v, y = c(2046, 2055)) {
-  rast_f <- fish_rast_df |> 
-    filter(clim_scen == c & fish_scen == f & var == v) |> 
-    pull(file)
-  r <- rast(rast_f)
-
-  r_time <- time(r)
-  yrs    <- as.numeric(format(r_time, "%Y"))
-
-  idx <- which(yrs >= min(y) & yrs <= max(y))
-  r_sub <- r[[idx]]
-
-  return(r_sub)
-}
-
-calc_stressor <- function(c = 'ssp585', v, y = c(2046, 2055)) {
-  ### unfished and fished biomass density
-  bd_unfished_r <- grab_rast_layers(c, f = 'nat', v, y) |> mean()
-  bd_fished_r <- grab_rast_layers(c, f = '2015soc-from-histsoc', v, y) |> mean()
-  ratio <- (bd_unfished_r - bd_fished_r) / (bd_unfished_r)
-
-  ratio[ratio < 0] <- 0 ### some anomalous negative values in there
-
-  ### Normalize to 1 at the 99.9th percentile observed  
-  ref <- quantile(values(ratio), .999, na.rm = TRUE)
-  str_r <- ratio / ref
-  str_r[str_r > 1] <- 1
-
-  names(str_r) <- paste0('str_intensity_', v)
-  return(str_r)
-}
-
-rast_gapfill <- function(r, w = 3, iter = 5) {
-  if(iter == 1) {
-    r_focal <- focal(r, w = 3, fun = "mean", na.policy = "only", na.rm = TRUE)
-
-    r_filled <- cover(r, r_focal)
-    ### cover() returns r where r is non-NA, and r_focal elsewhere
-    return(r_filled)
-  }
-
-  r_filled <- r
-
-  for (i in seq_len(iter)) {
-    na_count_before <- global(is.na(r_filled), "sum")[[1]]
-    r_focal  <- focal(r_filled, w = 3, fun = "mean", na.policy = "only", na.rm = TRUE)
-    r_filled <- cover(r_filled, r_focal)
-    na_count_after <- global(is.na(r_filled), "sum")[[1]]
-    message(sprintf("Iter %d: %d NAs -> %d NAs\n", i, na_count_before, na_count_after))
-    if (all(na_count_after == 0 | na_count_after == na_count_before)) break
-  }
-  return(r_filled)
-}
-```
-
-Fisheries stressor per size/position class $c$ is based on the proportion of biomass removed.
-
-$$BD_{c}^{removed} = \frac{BD_c^{unfished} - BD_c^{fished}}{BD_c^{unfished}}$$
-
-This ratio is normalized by the 99.9th percentile value as reference point.  Later we may weight the percentile using unfished biomass.  The `collapse::fquantile` function has a `w`eights argument.  
-
-NOTE: We don't want to combine layers at the stressor intensity level - first apply the vulnerability scores, then combine the impact layers.
-
-```{r calc stressor intensities}
-str_dsm <- calc_stressor(v = 'bd30cm')
-str_dmd <- calc_stressor(v = 'bd30to90cm')
-str_dlg <- calc_stressor(v = 'bd90cm')
-
-str_psm <- calc_stressor(v = 'bp30cm')
-str_pmd <- calc_stressor(v = 'bp30to90cm')
-str_plg <- calc_stressor(v = 'bp90cm')
-
-ocean_r <- get_ocean_rast()
-### consolidate stressor rasts and project  to Behrmann
-str_r <- c(str_dlg, str_plg, str_dmd, str_pmd, str_dsm, str_psm) |>
-  rast_gapfill(iter = 5) |>
-  project(ocean_r)
-
-### Mask to just ocean cells
-str_r <- mask(str_r, ocean_r)
-```
-
+The vulnerability layers have large gaps in them, since only fished species (per FAO) were used to 
 ```{r}
 vuln_r_fs <- list.files(here('_output/vuln_maps/biomass_removal'), 
                         pattern = '.parquet$', full.names = TRUE)
@@ -448,7 +347,6 @@ vuln_r_list <- lapply(vuln_r_fs, FUN = parquet_to_rast, param = 'mean', scenario
 
 vuln_r <- do.call(c, vuln_r_list) |> 
   setNames(str_remove_all(basename(vuln_r_fs), '.+_vuln_|.parquet'))
-
 ```
 
 The vulnerability layers, based on currently-fished species, have large gaps in some cases.  If these align with zero-value stressors, great, otherwise some gapfilling will need to occur.
@@ -457,16 +355,3 @@ The vulnerability layers, based on currently-fished species, have large gaps in 
 vuln_r_filled <- rast_gapfill(vuln_r, iter = 20)
 check_r <- mask(str_r, vuln_r_filled, inverse = TRUE)
 ```
-
-```{r}
-sm <- grab_rast_layers(f = 'nat', v = 'bd30cm') |> mean()
-md <- grab_rast_layers(f = 'nat', v = 'bd30to90cm') |> mean()
-lg <- grab_rast_layers(f = 'nat', v = 'bd90cm') |> mean()
-
-sm_wt <- sm / (sm + md + lg)
-md_wt <- md / (sm + md + lg)
-lg_wt <- lg / (sm + md + lg)
-
-overall_str_dem <- bdsm_str * sm_wt + bdmd_str * md_wt + bdlg_str * lg_wt
-```
-
