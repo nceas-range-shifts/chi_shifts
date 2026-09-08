@@ -1,5 +1,5 @@
 ---
-title: Map vulnerability and impacts - fisheries
+title: Map stressor intensity - fisheries
 author: "Casey O'Hara"
 format:
   html:
@@ -12,8 +12,8 @@ execute:
 
 Try prototyping with EcoOcean model (and maybe total biomass from BOATS, instead of/alongside biomass density).  Process rasters into analysis grid (Behrmann, 5 km resolution).  Gapfill as needed.
 
-* **Stressor reference points**: I think the ratio of fished biomass to unfished biomass is the starting point for a reference point
-    * **Max stressor**: If we set max stressor (stressor = 1) to say 99th percentile of B_{fished}/B_{unfished}, that seems like a typical starting point
+* **Stressor reference points**: I think the ratio of fished biomass to unfished biomass is the starting place for a reference point
+    * **Max stressor**: If we set max stressor (stressor = 1) to say 99.9th percentile of B_{fished}/B_{unfished}, that seems like a typical starting point
         * But, should there be consideration for total biomass instead of just the ratio?  A few low-biomass pixels with high fishing might (or might not) drive it if we ignore total biomass, or emphasize high fishing on high-biomass/high-productivity areas if we include it
         * My thought is to include total biomass if possible, but soften it with a log transform, so something like: (_biomass density (fished)_ / _biomass density (unfished)_) * log(_unfished biomass_) (and then do like 99th percentile)
     * ** Min stressor**: 
@@ -81,14 +81,16 @@ grab_rast_layers <- function(c = 'ssp585', f, v, y = c(2046, 2055)) {
 
   idx <- which(yrs >= min(y) & yrs <= max(y))
   r_sub <- r[[idx]]
+  r_mean <- mean(r_sub)
+  names(r_mean) <- v
 
-  return(r_sub)
+  return(r_mean)
 }
 
 calc_stressor <- function(c = 'ssp585', v, y = c(2046, 2055)) {
   ### unfished and fished biomass density
-  bd_unfished_r <- grab_rast_layers(c, f = 'nat', v, y) |> mean()
-  bd_fished_r <- grab_rast_layers(c, f = '2015soc-from-histsoc', v, y) |> mean()
+  bd_unfished_r <- grab_rast_layers(c, f = 'nat', v, y)
+  bd_fished_r <- grab_rast_layers(c, f = '2015soc-from-histsoc', v, y)
   ratio <- (bd_unfished_r - bd_fished_r) / (bd_unfished_r)
 
   ratio[ratio < 0] <- 0 ### some anomalous negative values in there
@@ -134,55 +136,64 @@ This ratio is normalized by the 99.9th percentile value as reference point.  Lat
 NOTE: We don't want to combine layers at the stressor intensity level - first apply the vulnerability scores, then combine the impact layers.
 
 ```{r calc stressor intensities}
-str_dsm <- calc_stressor(v = 'bd30cm')
-str_dmd <- calc_stressor(v = 'bd30to90cm')
-str_dlg <- calc_stressor(v = 'bd90cm')
+str_intensity_f <- here('_output/stressor_maps/biomass_removal', 
+                        'biomass_removal_stressor_intensity.tif')
 
-str_psm <- calc_stressor(v = 'bp30cm')
-str_pmd <- calc_stressor(v = 'bp30to90cm')
-str_plg <- calc_stressor(v = 'bp90cm')
+if(!file.exists(str_intensity_f)) {
+  str_dsm <- calc_stressor(v = 'bd30cm')
+  str_dmd <- calc_stressor(v = 'bd30to90cm')
+  str_dlg <- calc_stressor(v = 'bd90cm')
 
-ocean_r <- get_ocean_rast()
-### consolidate stressor rasts and project  to Behrmann
-str_r <- c(str_dlg, str_plg, str_dmd, str_pmd, str_dsm, str_psm) |>
-  rast_gapfill(iter = 5) |>
-  project(ocean_r)
+  str_psm <- calc_stressor(v = 'bp30cm')
+  str_pmd <- calc_stressor(v = 'bp30to90cm')
+  str_plg <- calc_stressor(v = 'bp90cm')
 
-### Mask to just ocean cells
-str_r <- mask(str_r, ocean_r)
+  ocean_r <- get_ocean_rast()
 
-### any unfilled ocean cells?  inverse mask result against ocean rast
-# check_result <- mask(ocean_r, str_r, inverse = TRUE)
-# sum(!is.na(values(check_result)))
-# # [1] 0
+  ### consolidate stressor rasts and project  to Behrmann
+  str_r <- c(str_dlg, str_plg, str_dmd, str_pmd, str_dsm, str_psm) |>
+    ### need to gapfill coastal cell gaps
+    rast_gapfill(iter = 5) |>
+    project(ocean_r)
+
+  ### Mask to just ocean cells
+  str_r <- mask(str_r, ocean_r)
+
+  ### any unfilled ocean cells?  inverse mask result against ocean rast
+  # check_result <- mask(ocean_r, str_r, inverse = TRUE)
+  # sum(!is.na(values(check_result)))
+  # # [1] 0
+  writeRaster(str_r, str_intensity_f)
+}
+str_r <- rast(str_intensity_f)
+plot(str_r)
 ```
+
+### Create a size class weighting layer
+
+This raster will contain the biomass density for the various layers (sm/md/lg at demersal/pelagic).  This can be used to weight the impacts across layers for combining later.
 
 ```{r}
-vuln_r_fs <- list.files(here('_output/vuln_maps/biomass_removal'), 
-                        pattern = '.parquet$', full.names = TRUE)
+layer_biomass_f <- here('_output/stressor_maps/biomass_removal', 
+                        'biomass_removal_biomass_by_class.tif')
 
-vuln_r_list <- lapply(vuln_r_fs, FUN = parquet_to_rast, param = 'mean', scenario = 'rcp45_2050')
+if(!file.exists(layer_biomass_f)) {
+  dsm <- grab_rast_layers(f = 'nat', v = 'bd30cm')
+  dmd <- grab_rast_layers(f = 'nat', v = 'bd30to90cm')
+  dlg <- grab_rast_layers(f = 'nat', v = 'bd90cm')
+  psm <- grab_rast_layers(f = 'nat', v = 'bp30cm') 
+  pmd <- grab_rast_layers(f = 'nat', v = 'bp30to90cm')
+  plg <- grab_rast_layers(f = 'nat', v = 'bp90cm')
 
-vuln_r <- do.call(c, vuln_r_list) |> 
-  setNames(str_remove_all(basename(vuln_r_fs), '.+_vuln_|.parquet'))
-```
+  biomass_r <- c(dlg, plg, dmd, pmd, dsm, psm) |>
+    ### need to gapfill coastal cell gaps
+    rast_gapfill(iter = 5) |>
+    project(ocean_r) |>
+    mask(ocean_r)
 
-The vulnerability layers, based on currently-fished species, have large gaps in some cases.  If these align with zero-value stressors, great, otherwise some gapfilling will need to occur.
-
-```{r check stressor vs vuln gaps}
-vuln_r_filled <- rast_gapfill(vuln_r, iter = 20)
-check_r <- mask(str_r, vuln_r_filled, inverse = TRUE)
-```
-
-```{r}
-sm <- grab_rast_layers(f = 'nat', v = 'bd30cm') |> mean()
-md <- grab_rast_layers(f = 'nat', v = 'bd30to90cm') |> mean()
-lg <- grab_rast_layers(f = 'nat', v = 'bd90cm') |> mean()
-
-sm_wt <- sm / (sm + md + lg)
-md_wt <- md / (sm + md + lg)
-lg_wt <- lg / (sm + md + lg)
-
-overall_str_dem <- bdsm_str * sm_wt + bdmd_str * md_wt + bdlg_str * lg_wt
+  writeRaster(biomass_r, layer_biomass_f)
+}
+biomass_r <- rast(layer_biomass_f)
+plot(biomass_r)
 ```
 

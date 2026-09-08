@@ -52,7 +52,7 @@ ISIMIP models break fishery species into size classes (<30 cm, 30-90 cm, >90 cm)
 * For each class, generate a biomass removal vulnerability map.  Should this be weighted by FAO species catch?
 
 ```{r define FAO helper functions}
-get_clean_fao_spp <- function(drop_nei = TRUE) {
+get_clean_fao_spp <- function() {
     fao_spp_gps <- read_csv(here('_data/fao_2026/capture/CL_FI_SPECIES_GROUPS.csv'),
                           show_col_types = FALSE) |>
       janitor::clean_names() |>
@@ -66,10 +66,6 @@ get_clean_fao_spp <- function(drop_nei = TRUE) {
               !str_detect(sciname, ' ')) |> 
       select(sciname = sciname2, comname, species_alpha_3_code = x3a_code, nei) |>
       clean_fao_aphia_id()
-
-    if(drop_nei) return(fao_spp_gps |> 
-                          filter(!nei) |> 
-                          select(-nei))
                         
     ### otherwise: return it all
     return(fao_spp_gps)
@@ -106,7 +102,7 @@ clean_fao_aphia_id <- function(df) {
   }
   df <- df |>
     left_join(read_csv(fao_spp_aphia_f, show_col_types = FALSE),
-              by = 'sciname')
+              by = 'sciname', relationship = 'many-to-many')
 }
 
 clean_fao_value <- function(df) {
@@ -116,7 +112,8 @@ clean_fao_value <- function(df) {
     group_by(species_alpha_3_code, period) |>
     ### summarize by species ID first
     summarize(total = sum(value, na.rm = TRUE), .groups = 'drop') |>
-    left_join(get_clean_fao_spp(drop_nei = FALSE), by = 'species_alpha_3_code') |>
+    left_join(get_clean_fao_spp(), by = 'species_alpha_3_code',
+              relationship = 'many-to-many') |>
     ### split multi-spp IDs and reallocate catch
     group_by(species_alpha_3_code, period) |>
     mutate(total = total / n()) |>
@@ -127,21 +124,71 @@ clean_fao_value <- function(df) {
 }
 ```
 
+Let's use genus-level species catches to supplement the species-level catches (adds about 2600 spp: 3160 --> 5777).  This will include a few more species within the vulnerability scores.  Using family-level adds more than 7100 species, more doubling the species count - mostly small and medium demersal.  But there is probably a lot of uncertainty as to which of these spp are actually fished.
+
 ```{r load fao data}
 
-fao_capture <- read_csv(here('_data/fao_2026/capture/Capture_Quantity.csv')) |>
+fao_capture_raw <- read_csv(here('_data/fao_2026/capture/Capture_Quantity.csv'),
+                            show_col_types = FALSE) |>
   clean_fao_value()
+
+aquax_taxa <- get_aquax_meta() |>
+  select(aphia_id, sciname = scientific_name, kingdom, phylum, class, order, family, genus)
+
+fao_species <- fao_capture_raw |> filter(!nei) |> 
+  mutate(level = 'species')
+
+fao_nei <- fao_capture_raw |> filter(nei) |>
+  filter(!str_detect(sciname, ' spp$') & !str_detect(sciname, 'idae')) |>
+  mutate(level = 'nei')
+
+fao_genus <- fao_capture_raw |> filter(nei) |>
+  filter(str_detect(sciname, ' spp$')) |>
+  mutate(genus = str_remove(sciname, ' .+'), nei = FALSE) |>
+  select(-aphia_id, -sciname) |>
+  left_join(aquax_taxa, by = 'genus', relationship = 'many-to-many') |>
+  filter(!is.na(aphia_id)) |>
+  ### divide genus-level total evenly across all species
+  group_by(genus, period) |>
+  mutate(total = total / n()) |>
+  ungroup() |>
+  select(-genus) |>
+  mutate(level = 'genus')
+
+fao_family <- fao_capture_raw |> filter(nei) |>
+  filter(str_detect(sciname, 'idae$')) |>
+  rename(family = sciname) |>
+  select(-aphia_id) |>
+  left_join(aquax_taxa, by = 'family', relationship = 'many-to-many') |>
+  filter(!is.na(aphia_id)) |>
+  ### divide family-level total evenly across all species
+  group_by(family, period) |>
+  mutate(total = total / n()) |>
+  ungroup() |>
+  select(-family) |>
+  mutate(level = 'family')
+
+fao_capture <- bind_rows(fao_species, fao_genus, fao_family, fao_nei) |>
+  select(aphia_id, sciname, level, period, total) |>
+  distinct()
+
+write_csv(fao_capture, here('_data/fao_2026/fao_capture_spp_genus_fam.csv'))
 
 ### What proportion are not differentiated at spp level (e.g., NEI)?
 fao_cap_sum <- fao_capture |>
-  group_by(period, nei) |>
-  summarize(total = sum(total))
-ggplot(fao_cap_sum, aes(x = period, y = total)) +
-  geom_area(aes(fill = nei))
+  group_by(period, level) |>
+  summarize(total = sum(total), .groups = 'drop') |>
+  mutate(level = factor(level, levels = c('species', 'genus', 'family', 'nei')))
 
-fao_spp <- fao_capture |>
-  filter(period > 2000 & !nei & !is.na(aphia_id)) %>%
-  group_by(sciname, aphia_id) %>%
+ggplot(fao_cap_sum, aes(x = period, y = total)) +
+  geom_area(aes(fill = level))
+
+fao_capture_spp <- fao_capture |>
+  filter(period > 2000 & !is.na(aphia_id)) |>
+  filter(!level %in% c('nei', 'family')) |>
+  group_by(sciname, aphia_id, period) |>
+  summarize(total = sum(total), .groups = 'drop') |>
+  group_by(sciname, aphia_id) |>
   summarize(mean_catch = mean(total, na.rm = TRUE), .groups = 'drop')
 ```
 
@@ -149,7 +196,10 @@ Which of these species are mapped in AquaX?  Match to Aphia ID.  Then bind trait
 
 ```{r}
 aquax_meta <- get_aquax_meta()
-size_df  <- read_csv(here('_data/ohara_2024/funct_entity_traits/fe_spp_traits.csv')) |>
+
+size_df  <- read_csv(here('_data/ohara_2024/funct_entity_traits/fe_spp_traits.csv'),
+                     show_col_types = FALSE) |>
+  filter(!is.na(length_cm)) |>
   mutate(size = case_when(length_cm < 30 ~ 'sm',
                           length_cm < 90 ~ 'md',
                           !is.na(length_cm) ~ 'lg',
@@ -157,15 +207,15 @@ size_df  <- read_csv(here('_data/ohara_2024/funct_entity_traits/fe_spp_traits.cs
   select(aphia_id, size) |>
   distinct()
 
-fao_aquax <- fao_spp |> 
+fao_aquax <- fao_capture_spp |> 
   inner_join(aquax_meta, by = c('aphia_id', 'sciname' = 'scientific_name')) |>
-  mutate(position = ifelse(pelagic, 'pelagic', 'demersal')) %>%
-  select(aphia_id, sciname, mean_catch, position) %>%
-  left_join(size_df, by = 'aphia_id') |>
+  mutate(position = ifelse(pelagic, 'pelagic', 'demersal')) |>
+  select(aphia_id, sciname, mean_catch, position) |>
+  inner_join(size_df, by = 'aphia_id') |>
   mutate(class = paste(size, position, sep = '_'))
 
 ### Some moderately-fished spp without size info - update FishBase data?
-# check_nas <- fao_aquax %>% 
+# check_nas <- fao_aquax |> 
 #   filter(is.na(size)) |>
 #   filter(mean_catch > 100)
 
@@ -177,8 +227,9 @@ fao_aquax_vuln_df <- fao_aquax |>
   filter(!is.na(size)) |>
   left_join(biomass_removal_vuln_df, by = 'aphia_id')
 
-# fao_aquax_vuln_df$class %>% table()
-
+# fao_aquax_vuln_df$class |> table()
+# # lg_demersal  lg_pelagic md_demersal  md_pelagic sm_demersal  sm_pelagic 
+# #         477         168        1630         230        1882         287 
 ```
 
 ### Iterate over classes to develop vulnerability maps
@@ -233,7 +284,7 @@ pull_scenario_stats <- function(sc, d_array) {
 ```
 
 ```{r iterate over size classes}
-size_classes <- fao_aquax_vuln_df$class %>% unique()
+size_classes <- fao_aquax_vuln_df$class |> unique()
 
 for(size_class in size_classes) {
   ### size_class <- 'lg_demersal'
@@ -336,22 +387,68 @@ for(size_class in size_classes) {
 } ### END LOOP over size classes
 ```
 
-### Gapfill
-
-The vulnerability layers have large gaps in them, since only fished species (per FAO) were used to 
-```{r}
-vuln_r_fs <- list.files(here('_output/vuln_maps/biomass_removal'), 
-                        pattern = '.parquet$', full.names = TRUE)
-
-vuln_r_list <- lapply(vuln_r_fs, FUN = parquet_to_rast, param = 'mean', scenario = 'rcp45_2050')
-
-vuln_r <- do.call(c, vuln_r_list) |> 
-  setNames(str_remove_all(basename(vuln_r_fs), '.+_vuln_|.parquet'))
-```
+### Gapfill and project
 
 The vulnerability layers, based on currently-fished species, have large gaps in some cases.  If these align with zero-value stressors, great, otherwise some gapfilling will need to occur.
 
-```{r check stressor vs vuln gaps}
-vuln_r_filled <- rast_gapfill(vuln_r, iter = 20)
-check_r <- mask(str_r, vuln_r_filled, inverse = TRUE)
+* Read in parquet files and convert to rasters
+* Gapfill at the 5 km resolution
+
+```{r define gapfill function}
+rast_gapfill <- function(r, w = 3, iter = 5) {
+  if(iter == 1) {
+    r_focal <- focal(r, w = 3, fun = "mean", na.policy = "only", na.rm = TRUE)
+
+    r_filled <- cover(r, r_focal)
+    ### cover() returns r where r is non-NA, and r_focal elsewhere
+    return(r_filled)
+  }
+
+  r_filled <- r
+  if(iter >= 5) ocean_r <- get_ocean_rast()
+  for (i in seq_len(iter)) {
+    na_count_before <- global(is.na(r_filled), "sum")[[1]]
+    r_focal  <- focal(r_filled, w = 3, fun = "mean", na.policy = "only", na.rm = TRUE)
+    r_filled <- cover(r_filled, r_focal)
+    na_count_after <- global(is.na(r_filled), "sum")[[1]]
+    message(sprintf("Iter %d: %d NAs -> %d NAs", i, na_count_before, na_count_after))
+    if (all(na_count_after == 0 | na_count_after == na_count_before)) break
+    if(i %% 5 == 0) {
+      ### check against ocean_rast - if no remaining ocean cells, exit
+      check_r <- mask(ocean_r, r_filled, inverse = TRUE)
+      n_ocean_remaining <- sum(!is.na(values(check_r)))
+      message(sprintf("* Iter %d: %d ocean cells remaining", i, n_ocean_remaining))
+      if(n_ocean_remaining == 0) break
+    }
+  }
+  return(r_filled)
+}
+```
+
+```{r gapfill vuln}
+ocean_r <- get_ocean_rast() ### for masking and projecting
+
+vuln_parq_fs <- list.files(here('_output/vuln_maps/biomass_removal'), 
+                           pattern = 'demersal.parquet$|pelagic.parquet$', 
+                           full.names = TRUE)
+vuln_rast_fs <- sub('.parquet', '_gapfilled.tif', vuln_parq_fs)
+
+for(i in seq_along(vuln_parq_fs)) {
+  ### i <- 1
+  pre_r <- parquet_to_rast(vuln_parq_fs[i], param = 'mean', scenario = 'rcp45_2050')
+
+  post_f <- vuln_rast_fs[i]
+  if(!file.exists(post_f)) {
+    vuln_r_filled <- rast_gapfill(pre_r, iter = 100) |>
+      mask(ocean_r)
+    writeRaster(vuln_r_filled, post_f)
+  }
+  post_r <- rast(post_f)
+  lbl <- gsub('_gapfilled.tif|^.+_vuln_', '', basename(post_f))
+  plot(c(pre_r, post_r), main = lbl)
+}
+
+# if(any(!file.exists(vuln_rast_fs))) {
+#   vuln_r_filled <- rast_gapfill(vuln_r, iter = 30)
+# }
 ```
