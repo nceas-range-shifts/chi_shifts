@@ -105,7 +105,21 @@ impact_all_sum <- sum(impact_r * biomass_r, na.rm = TRUE) / sum(biomass_r, na.rm
 
 impact_r <- c(impact_dem_sum, impact_pel_sum, impact_all_sum) %>%
   setNames(c('impact_demersal', 'impact_pelagic', 'impact_total'))
-plot(impact_r)
 
-writeRaster(impact_r, here('_output/biomass_removal_impact.tif'), overwrite = TRUE)
+writeRaster(impact_r, here('_output/impact_maps/biomass_removal_impact.tif'), overwrite = TRUE)
+```
+
+Plot with ggplot
+
+
+```{r}
+impact_df <- as.data.frame(impact_r, xy = TRUE) |>
+  pivot_longer(-c(x, y), names_to = 'group', values_to = 'impact')
+
+ggplot(impact_df, aes(x, y, fill = impact)) +
+  geom_raster() +
+  scale_fill_viridis_c() +
+  theme_void() +
+  coord_fixed() +
+  facet_wrap(~group, ncol = 1)
 ```
