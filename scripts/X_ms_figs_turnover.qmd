@@ -1,5 +1,5 @@
 ---
-title: Map species and functional change against fisheries impacts
+title: MS Figs for species and functional change
 author: "Casey O'Hara"
 format:
   html:
@@ -10,13 +10,19 @@ execute:
 
 ## Summary
 
-Compare turnover metrics against fisheries impacts.
+Generate MS figures for species and functional turnover:
+
+* Species and functional richness, current and projected change
+* Species and richness projected change in richness for large predators
+    * Species and richness projected change in richness for fishery species (too similar?)
+* Spp and FE change due to extirpation and colonization
+* Overlap of SPP and FE turnover with fisheries biomass removal impacts
+
 
 ## Data
 
 * AquaX species distribution models from Reygondeau et al. (2026). AquaX: An enhanced and revised AquaMaps framework to model marine species distributions and biodiversity. PLOS ONE, 21(2), e0335823. https://doi.org/10.1371/journal.pone.0335823
 * Function entities from O'Hara et al. (2024). Cumulative human impacts on global marine fauna highlight risk to biological and functional diversity. PLOS ONE, 19(9), e0309788. https://doi.org/10.1371/journal.pone.0309788
-* Fisheries projections from ISIMIP 3b BOATSv1
 
 ## Methods
 
@@ -41,18 +47,6 @@ library(collapse)
 library(biscale)  ### for bivariate legend
 library(cowplot)
 ```
-
-### Load fisheries impacts
-
-Biomass removal impacts generated in scripts `map_vuln_fisheries.qmd`, `map_stressors_fisheries.qmd`, and `map_impact_fisheries.qmd`.  These are already in raster format and Behrmann projection at 5 km resolution.
-
-Layers include `impact_demersal`, `impact_pelagic`, and `impact_total` (biomass-weighted mean of demersal and pelagic).
-
-```{r fisheries impacts}
-fish_impact_r <- rast(here('_output/impact_maps/biomass_removal_impact.tif'))
-
-```
-
 
 ### Read in and rasterize turnover metrics
 
@@ -114,13 +108,13 @@ plot_map <- function(data, fill_var) {
 }
 ```
 
-### Map of SPP and FE richness
+### Fig. 1: Map of SPP and FE richness
 
 Current and change 
 ```{r spp and fe richness}
-fig_f <- here('ms_figs/figX_spp_fe_richness.png')
+fig1_f <- here('ms_figs/fig1_spp_fe_richness.png')
 
-if(!file.exists(fig_f)) {
+if(!file.exists(fig1_f)) {
   nspp_r <- rast(here('_output/spp_turnover_maps/all_spp_richness.tif'))
   nfe_r  <- rast(here('_output/fe_turnover_maps/all_fe_richness.tif'))
 
@@ -199,80 +193,64 @@ if(!file.exists(fig_f)) {
     draw_label('C', x = 0, y = .5, vjust = 1, hjust = 0, size = 14, fontface = 'bold') +
     draw_label('D', x = .51, y = .5, vjust = 1, hjust = 1, size = 14, fontface = 'bold')
 
-  ggsave(fig_f, height = 3.8, width = 10, dpi = 300)
+  ggsave(fig1_f, height = 3.8, width = 10, dpi = 300)
 }
-knitr::include_graphics(fig_f)
+knitr::include_graphics(fig1_f)
 ```
 
-#### Focus on apex spp: richness and pct change
-```{r apex spp richness}
-fig_f <- here('ms_figs/figX_apex_spp_richness.png')
+### Fig. 2: Focus on apex spp: richness and pct change
 
-if(!file.exists(fig_f)) {
-  nspp_r <- rast(here('_output/spp_turnover_maps/apex_spp_richness.tif'))
+Generate panels A and B
+```{r apex spp richness A and B}
+fig2_f <- here('ms_figs/fig2_apex_spp_richness.png')
+
+if(!file.exists(fig2_f)) {
+  apex_nspp_r <- rast(here('_output/spp_turnover_maps/apex_spp_richness.tif'))
+  all_nspp_r  <- rast(here('_output/spp_turnover_maps/all_spp_richness.tif'))
 
   ### Diverging palette from magenta to dark green, with yellow tone
   ### in middle - based on hcl.colors(pal = 'Red-Green')
   div_pal <- c("#841859", "#FFFFEE", "#005600")
 
-  nspp_df <- as.data.frame(nspp_r, xy = TRUE) %>%
+  nspp_df <- as.data.frame(apex_nspp_r, xy = TRUE) %>%
     fmutate(log_n = log10(spp_r_current),
-            diff_rcp45_2050 = (rcp45_2050 - spp_r_current) / spp_r_current, 
-            diff_rcp85_2050 = (rcp85_2050 - spp_r_current) / spp_r_current) %>%
+            diff_rcp45_2050 = (rcp45_2050 - spp_r_current) / spp_r_current) %>%
     ### Treat anything over 1 as 1(+) (Inf: zero spp now 1), 
     ### Treat NaN as zero (zero spp still zero)
     fmutate(log_n = ifelse(is.infinite(log_n), NA, log_n)) |>
     fmutate(diff_rcp45_2050 = case_when((diff_rcp45_2050 > 1) ~ 1,
                                         is.nan(diff_rcp45_2050) ~ 0,
-                                        TRUE ~ diff_rcp45_2050)) %>%
-    fmutate(diff_rcp85_2050 = case_when((diff_rcp85_2050 > 1) ~ 1,
-                                        is.nan(diff_rcp85_2050) ~ 0,
-                                        TRUE ~ diff_rcp85_2050))
+                                        TRUE ~ diff_rcp45_2050))
     
   nspp_max <- max(nspp_df$spp_r_current)
   nspp_brks <- seq(1, log10(nspp_max), 1)
-  nspp_panel <- plot_map(data = nspp_df, fill_var = log_n) +
+  nspp_plot <- plot_map(data = nspp_df, fill_var = log_n) +
     scale_fill_viridis_c(breaks = c(0, 1, 2, 3, log10(nspp_max)), 
                         labels = c(1, 10, 100, 1000, nspp_max)) +
     theme(text = element_text(size = 9)) +
-    labs(fill = expression(N[spp]))
+    labs(fill = expression(N[pred]))
 
-
-
-  dspp_panel <- plot_map(data = nspp_df, fill_var = diff_rcp45_2050) +
+  dspp_plot <- plot_map(data = nspp_df, fill_var = diff_rcp45_2050) +
     scale_fill_gradient2(low = div_pal[1], mid = div_pal[2], 
                         high = div_pal[3], midpoint = 0,
                         breaks = c(-1, -.5, 0, .5, 1),
                         labels = c('-100%', '-50%', '0%', '50%', '≥100%')) +
     theme(text = element_text(size = 9)) +
-    labs(fill = expression('∆' * N[spp]))
-
-
-  p <- ggdraw() +
-    draw_plot(nspp_panel, x = .02, y = 0.5, height = .5, width = .98) +
-    draw_plot(dspp_panel, x = .02, y = 0.0, height = .5, width = .98) +
-    draw_label('A', x = 0, y = 1.0,  vjust = 1, hjust = 0, size = 14, fontface = 'bold') +
-    draw_label('B', x = 0, y = 0.5, vjust = 1, hjust = 0, size = 14, fontface = 'bold')
-  ggsave(fig_f, height = 6, width = 8, dpi = 300)
+    labs(fill = expression('∆' * N[pred]))
 }
-knitr::include_graphics(fig_f)
 ```
 
-#### Focus on apex spp: relative change vs other spp
-```{r apex spp relative change}
-fig_f <- here('ms_figs/figX_apex_spp_vs_other_spp.png')
+Generate panel C
+```{r apex spp richness C}
 
-if(!file.exists(fig_f)) {
-  apex_r <- rast(here('_output/spp_turnover_maps/apex_spp_richness.tif'))
-  all_r  <- rast(here('_output/spp_turnover_maps/all_spp_richness.tif'))
-
+if(!file.exists(fig2_f)) {
   ### Diverging palette orange-purple to indicate difference from pink-green
   div_pal <- c("#f1a340", "#f1f1f1", "#998ec3")
 
-  apex_df <- as.data.frame(apex_r, xy = TRUE) %>%
+  apex_df <- as.data.frame(apex_nspp_r, xy = TRUE) %>%
     select(x, y, apex_current = spp_r_current, apex_2050 = rcp45_2050)
    
-  all_df <- as.data.frame(all_r, xy = TRUE) %>%
+  all_df <- as.data.frame(all_nspp_r, xy = TRUE) %>%
     select(x, y, all_current = spp_r_current, all_2050 = rcp45_2050)
 
   compare_df <- apex_df %>%
@@ -285,224 +263,275 @@ if(!file.exists(fig_f)) {
             delta = ifelse(delta > 1, 1, delta),
             delta = ifelse(delta < -1, -1, delta))
 
-  diff_panel <- plot_map(data = compare_df, fill_var = delta) +
+  diff_plot <- plot_map(data = compare_df, fill_var = delta) +
     scale_fill_gradient2(low = div_pal[1], mid = div_pal[2], 
                         high = div_pal[3], midpoint = 0,
                         breaks = c(-1, -.5, 0, .5, 1),
                         labels = c('-100%', '-50%', '0%', '50%', '≥100%')) +
     theme(text = element_text(size = 9)) +
-    labs(fill = expression('∆' * N[pred] - '∆' * N[other]))
-
-
-  # p <- ggdraw() +
-  #   draw_plot(nspp_panel, x = .02, y = 0.5, height = .5, width = .98) +
-  #   draw_plot(dspp_panel, x = .02, y = 0.0, height = .5, width = .98) +
-  #   draw_label('A', x = 0, y = 1.0,  vjust = 1, hjust = 0, size = 14, fontface = 'bold') +
-  #   draw_label('B', x = 0, y = 0.5, vjust = 1, hjust = 0, size = 14, fontface = 'bold')
-  ggsave(fig_f, height = 3.1, width = 8, dpi = 300)
+    labs(fill = expression(atop('∆' * N[pred], -'∆' * N[other])))
 }
-knitr::include_graphics(fig_f)
 ```
 
-#### Focus on fisheries spp: richness and pct change
-```{r fisheries spp richness}
-fig_f <- here('ms_figs/figX_fisheries_spp_richness.png')
+Assemble three panel figure
 
-if(!file.exists(fig_f)) {
-  nspp_r <- rast(here('_output/spp_turnover_maps/fisheries_spp_richness.tif'))
+```{r fig 2 pull panels}
+if(!file.exists(fig2_f)) {
+  nspp_panel <- get_panel(nspp_plot)
+  dspp_panel <- get_panel(dspp_plot)
+  diff_panel <- get_panel(diff_plot)
+  nspp_lgd <- get_legend(nspp_plot)
+  dspp_lgd <- get_legend(dspp_plot)
+  diff_lgd <- get_legend(diff_plot)
+}
+```
+
+```{r apex spp richness assemble figure}
+if(!file.exists(fig2_f)) {
+  x1 <- 0.02; w1 <- 0.88; h1 <- 0.33
+  x2 <- 0.90; w2 <- 0.10; h2 <- 0.33
+  ya <- 0.667; yb <- 0.333; yc <- 0.000
+
+  p <- ggdraw() +
+    ### plot panels
+    draw_plot(nspp_panel, x = x1, y = ya, height = h1, width = w1) +
+    draw_plot(dspp_panel, x = x1, y = yb, height = h1, width = w1) +
+    draw_plot(diff_panel, x = x1, y = yc, height = h1, width = w1) +
+    ### plot legends
+    draw_plot(nspp_lgd, x = x2-.012, y = ya, height = h2, width = w2) +
+    draw_plot(dspp_lgd, x = x2, y = yb, height = h2, width = w2) +
+    draw_plot(diff_lgd, x = x2, y = yc, height = h2, width = w2) +
+    ### draw labels
+    draw_label('A', x = 0, y = ya+h1, vjust = 1, hjust = 0, size = 14, fontface = 'bold') +
+    draw_label('B', x = 0, y = yb+h1, vjust = 1, hjust = 0, size = 14, fontface = 'bold') +
+    draw_label('C', x = 0, y = yc+h1, vjust = 1, hjust = 0, size = 14, fontface = 'bold')
+  ggsave(fig2_f, height = 9, width = 8, dpi = 300)
+}
+knitr::include_graphics(fig2_f)
+```
+
+### Focus on fisheries spp: richness and pct change
+Generate panels A and B
+```{r fish spp richness A and B}
+figX_f <- here('ms_figs/figX_fisheries_spp_richness.png')
+
+if(!file.exists(figX_f)) {
+  fish_nspp_r <- rast(here('_output/spp_turnover_maps/fisheries_spp_richness.tif'))
+  all_nspp_r  <- rast(here('_output/spp_turnover_maps/all_spp_richness.tif'))
 
   ### Diverging palette from magenta to dark green, with yellow tone
   ### in middle - based on hcl.colors(pal = 'Red-Green')
   div_pal <- c("#841859", "#FFFFEE", "#005600")
 
-  nspp_df <- as.data.frame(nspp_r, xy = TRUE) %>%
+  nspp_df <- as.data.frame(fish_nspp_r, xy = TRUE) %>%
     fmutate(log_n = log10(spp_r_current),
-            diff_rcp45_2050 = (rcp45_2050 - spp_r_current) / spp_r_current, 
-            diff_rcp85_2050 = (rcp85_2050 - spp_r_current) / spp_r_current) %>%
+            diff_rcp45_2050 = (rcp45_2050 - spp_r_current) / spp_r_current) %>%
     ### Treat anything over 1 as 1(+) (Inf: zero spp now 1), 
     ### Treat NaN as zero (zero spp still zero)
     fmutate(log_n = ifelse(is.infinite(log_n), NA, log_n)) |>
     fmutate(diff_rcp45_2050 = case_when((diff_rcp45_2050 > 1) ~ 1,
                                         is.nan(diff_rcp45_2050) ~ 0,
-                                        TRUE ~ diff_rcp45_2050)) %>%
-    fmutate(diff_rcp85_2050 = case_when((diff_rcp85_2050 > 1) ~ 1,
-                                        is.nan(diff_rcp85_2050) ~ 0,
-                                        TRUE ~ diff_rcp85_2050))
+                                        TRUE ~ diff_rcp45_2050))
     
   nspp_max <- max(nspp_df$spp_r_current)
   nspp_brks <- seq(1, log10(nspp_max), 1)
-  nspp_panel <- plot_map(data = nspp_df, fill_var = log_n) +
+  nspp_plot <- plot_map(data = nspp_df, fill_var = log_n) +
     scale_fill_viridis_c(breaks = c(0, 1, 2, 3, log10(nspp_max)), 
                         labels = c(1, 10, 100, 1000, nspp_max)) +
     theme(text = element_text(size = 9)) +
-    labs(fill = expression(N[spp]))
+    labs(fill = expression(N[fishery]))
 
-
-
-  dspp_panel <- plot_map(data = nspp_df, fill_var = diff_rcp45_2050) +
+  dspp_plot <- plot_map(data = nspp_df, fill_var = diff_rcp45_2050) +
     scale_fill_gradient2(low = div_pal[1], mid = div_pal[2], 
                         high = div_pal[3], midpoint = 0,
                         breaks = c(-1, -.5, 0, .5, 1),
                         labels = c('-100%', '-50%', '0%', '50%', '≥100%')) +
     theme(text = element_text(size = 9)) +
-    labs(fill = expression('∆' * N[spp]))
-
-
-  p <- ggdraw() +
-    draw_plot(nspp_panel, x = .02, y = 0.5, height = .5, width = .98) +
-    draw_plot(dspp_panel, x = .02, y = 0.0, height = .5, width = .98) +
-    draw_label('A', x = 0, y = 1.0,  vjust = 1, hjust = 0, size = 14, fontface = 'bold') +
-    draw_label('B', x = 0, y = 0.5, vjust = 1, hjust = 0, size = 14, fontface = 'bold')
-  ggsave(fig_f, height = 6, width = 8, dpi = 300)
+    labs(fill = expression('∆' * N[fishery]))
 }
-knitr::include_graphics(fig_f)
 ```
 
-#### Focus on fisheries spp: relative change vs other spp
-```{r fisheries spp relative change}
-fig_f <- here('ms_figs/figX_fisheries_spp_vs_other_spp.png')
+Generate panel C
+```{r fishery spp richness C}
 
-if(!file.exists(fig_f)) {
-  fisheries_r <- rast(here('_output/spp_turnover_maps/fisheries_spp_richness.tif'))
-  all_r  <- rast(here('_output/spp_turnover_maps/all_spp_richness.tif'))
-
+if(!file.exists(figX_f)) {
   ### Diverging palette orange-purple to indicate difference from pink-green
   div_pal <- c("#f1a340", "#f1f1f1", "#998ec3")
 
-  fisheries_df <- as.data.frame(fisheries_r, xy = TRUE) %>%
-    select(x, y, fisheries_current = spp_r_current, fisheries_2050 = rcp45_2050)
+  fish_df <- as.data.frame(fish_nspp_r, xy = TRUE) %>%
+    select(x, y, fish_current = spp_r_current, fish_2050 = rcp45_2050)
    
-  all_df <- as.data.frame(all_r, xy = TRUE) %>%
+  all_df <- as.data.frame(all_nspp_r, xy = TRUE) %>%
     select(x, y, all_current = spp_r_current, all_2050 = rcp45_2050)
 
-  compare_df <- fisheries_df %>%
+  compare_df <- fish_df %>%
     join(all_df, how = 'full', on = c('x', 'y')) %>%
-    fmutate(other_current = all_current - fisheries_current,
-            other_2050    = all_2050 - fisheries_2050,
-            fisheries_diff     = (fisheries_2050 - fisheries_current) / fisheries_current,
+    fmutate(other_current = all_current - fish_current,
+            other_2050    = all_2050 - fish_2050,
+            fish_diff     = (fish_2050 - fish_current) / fish_current,
             other_diff    = (other_2050 - other_current) / other_current) %>%
-    fmutate(delta = fisheries_diff - other_diff,
+    fmutate(delta = fish_diff - other_diff,
             delta = ifelse(delta > 1, 1, delta),
             delta = ifelse(delta < -1, -1, delta))
 
-  diff_panel <- plot_map(data = compare_df, fill_var = delta) +
+  diff_plot <- plot_map(data = compare_df, fill_var = delta) +
     scale_fill_gradient2(low = div_pal[1], mid = div_pal[2], 
                         high = div_pal[3], midpoint = 0,
                         breaks = c(-1, -.5, 0, .5, 1),
                         labels = c('-100%', '-50%', '0%', '50%', '≥100%')) +
     theme(text = element_text(size = 9)) +
-    labs(fill = expression('∆' * N[pred] - '∆' * N[other]))
-
-
-  # p <- ggdraw() +
-  #   draw_plot(nspp_panel, x = .02, y = 0.5, height = .5, width = .98) +
-  #   draw_plot(dspp_panel, x = .02, y = 0.0, height = .5, width = .98) +
-  #   draw_label('A', x = 0, y = 1.0,  vjust = 1, hjust = 0, size = 14, fontface = 'bold') +
-  #   draw_label('B', x = 0, y = 0.5, vjust = 1, hjust = 0, size = 14, fontface = 'bold')
-  ggsave(fig_f, height = 3.1, width = 8, dpi = 300)
+    labs(fill = expression(atop('∆' * N[fishery], -'∆' * N[other])))
 }
-knitr::include_graphics(fig_f)
 ```
 
-#### Focus on aquaculture spp: richness and pct change
-```{r aquaculture spp richness}
-fig_f <- here('ms_figs/figX_aquaculture_spp_richness.png')
+Assemble three panel figure
 
-if(!file.exists(fig_f)) {
-  nspp_r <- rast(here('_output/spp_turnover_maps/aquaculture_spp_richness.tif'))
+```{r fig fisheries pull panels}
+if(!file.exists(figX_f)) {
+  nspp_panel <- get_panel(nspp_plot)
+  dspp_panel <- get_panel(dspp_plot)
+  diff_panel <- get_panel(diff_plot)
+  nspp_lgd <- get_legend(nspp_plot)
+  dspp_lgd <- get_legend(dspp_plot)
+  diff_lgd <- get_legend(diff_plot)
+}
+```
+
+```{r fisheries spp richness assemble figure}
+if(!file.exists(figX_f)) {
+  x1 <- 0.02; w1 <- 0.88; h1 <- 0.33
+  x2 <- 0.90; w2 <- 0.10; h2 <- 0.33
+  ya <- 0.667; yb <- 0.333; yc <- 0.000
+
+  p <- ggdraw() +
+    ### plot panels
+    draw_plot(nspp_panel, x = x1, y = ya, height = h1, width = w1) +
+    draw_plot(dspp_panel, x = x1, y = yb, height = h1, width = w1) +
+    draw_plot(diff_panel, x = x1, y = yc, height = h1, width = w1) +
+    ### plot legends
+    draw_plot(nspp_lgd, x = x2-.012, y = ya, height = h2, width = w2) +
+    draw_plot(dspp_lgd, x = x2, y = yb, height = h2, width = w2) +
+    draw_plot(diff_lgd, x = x2, y = yc, height = h2, width = w2) +
+    ### draw labels
+    draw_label('A', x = 0, y = ya+h1, vjust = 1, hjust = 0, size = 14, fontface = 'bold') +
+    draw_label('B', x = 0, y = yb+h1, vjust = 1, hjust = 0, size = 14, fontface = 'bold') +
+    draw_label('C', x = 0, y = yc+h1, vjust = 1, hjust = 0, size = 14, fontface = 'bold')
+  ggsave(figX_f, height = 9, width = 8, dpi = 300)
+}
+knitr::include_graphics(figX_f)
+```
+
+### Focus on aquaculture spp: richness and pct change
+Generate panels A and B
+```{r aqua spp richness A and B}
+figX_f <- here('ms_figs/figX_aquaculture_spp_richness.png')
+
+if(!file.exists(figX_f)) {
+  aqua_nspp_r <- rast(here('_output/spp_turnover_maps/aquaculture_spp_richness.tif'))
+  all_nspp_r  <- rast(here('_output/spp_turnover_maps/all_spp_richness.tif'))
 
   ### Diverging palette from magenta to dark green, with yellow tone
   ### in middle - based on hcl.colors(pal = 'Red-Green')
   div_pal <- c("#841859", "#FFFFEE", "#005600")
 
-  nspp_df <- as.data.frame(nspp_r, xy = TRUE) %>%
+  nspp_df <- as.data.frame(aqua_nspp_r, xy = TRUE) %>%
     fmutate(log_n = log10(spp_r_current),
-            diff_rcp45_2050 = (rcp45_2050 - spp_r_current) / spp_r_current, 
-            diff_rcp85_2050 = (rcp85_2050 - spp_r_current) / spp_r_current) %>%
+            diff_rcp45_2050 = (rcp45_2050 - spp_r_current) / spp_r_current) %>%
     ### Treat anything over 1 as 1(+) (Inf: zero spp now 1), 
     ### Treat NaN as zero (zero spp still zero)
     fmutate(log_n = ifelse(is.infinite(log_n), NA, log_n)) |>
     fmutate(diff_rcp45_2050 = case_when((diff_rcp45_2050 > 1) ~ 1,
                                         is.nan(diff_rcp45_2050) ~ 0,
-                                        TRUE ~ diff_rcp45_2050)) %>%
-    fmutate(diff_rcp85_2050 = case_when((diff_rcp85_2050 > 1) ~ 1,
-                                        is.nan(diff_rcp85_2050) ~ 0,
-                                        TRUE ~ diff_rcp85_2050))
+                                        TRUE ~ diff_rcp45_2050))
     
   nspp_max <- max(nspp_df$spp_r_current)
   nspp_brks <- seq(1, log10(nspp_max), 1)
-  nspp_panel <- plot_map(data = nspp_df, fill_var = log_n) +
+  nspp_plot <- plot_map(data = nspp_df, fill_var = log_n) +
     scale_fill_viridis_c(breaks = c(0, 1, 2, 3, log10(nspp_max)), 
                         labels = c(1, 10, 100, 1000, nspp_max)) +
     theme(text = element_text(size = 9)) +
-    labs(fill = expression(N[spp]))
+    labs(fill = expression(N[aqua]))
 
-
-
-  dspp_panel <- plot_map(data = nspp_df, fill_var = diff_rcp45_2050) +
+  dspp_plot <- plot_map(data = nspp_df, fill_var = diff_rcp45_2050) +
     scale_fill_gradient2(low = div_pal[1], mid = div_pal[2], 
                         high = div_pal[3], midpoint = 0,
                         breaks = c(-1, -.5, 0, .5, 1),
                         labels = c('-100%', '-50%', '0%', '50%', '≥100%')) +
     theme(text = element_text(size = 9)) +
-    labs(fill = expression('∆' * N[spp]))
-
-
-  p <- ggdraw() +
-    draw_plot(nspp_panel, x = .02, y = 0.5, height = .5, width = .98) +
-    draw_plot(dspp_panel, x = .02, y = 0.0, height = .5, width = .98) +
-    draw_label('A', x = 0, y = 1.0,  vjust = 1, hjust = 0, size = 14, fontface = 'bold') +
-    draw_label('B', x = 0, y = 0.5, vjust = 1, hjust = 0, size = 14, fontface = 'bold')
-  ggsave(fig_f, height = 6, width = 8, dpi = 300)
+    labs(fill = expression('∆' * N[aqua]))
 }
-knitr::include_graphics(fig_f)
 ```
 
-#### Focus on aquaculture spp: relative change vs other spp
-```{r aquaculture spp relative change}
-fig_f <- here('ms_figs/figX_aquaculture_spp_vs_other_spp.png')
+Generate panel C
+```{r aquaculture spp richness C}
 
-if(!file.exists(fig_f)) {
-  aquaculture_r <- rast(here('_output/spp_turnover_maps/aquaculture_spp_richness.tif'))
-  all_r  <- rast(here('_output/spp_turnover_maps/all_spp_richness.tif'))
-
+if(!file.exists(figX_f)) {
   ### Diverging palette orange-purple to indicate difference from pink-green
   div_pal <- c("#f1a340", "#f1f1f1", "#998ec3")
 
-  aquaculture_df <- as.data.frame(aquaculture_r, xy = TRUE) %>%
-    select(x, y, aquaculture_current = spp_r_current, aquaculture_2050 = rcp45_2050)
+  aqua_df <- as.data.frame(aqua_nspp_r, xy = TRUE) %>%
+    select(x, y, aqua_current = spp_r_current, aqua_2050 = rcp45_2050)
    
-  all_df <- as.data.frame(all_r, xy = TRUE) %>%
+  all_df <- as.data.frame(all_nspp_r, xy = TRUE) %>%
     select(x, y, all_current = spp_r_current, all_2050 = rcp45_2050)
 
-  compare_df <- aquaculture_df %>%
+  compare_df <- aqua_df %>%
     join(all_df, how = 'full', on = c('x', 'y')) %>%
-    fmutate(other_current = all_current - aquaculture_current,
-            other_2050    = all_2050 - aquaculture_2050,
-            aquaculture_diff     = (aquaculture_2050 - aquaculture_current) / aquaculture_current,
+    fmutate(other_current = all_current - aqua_current,
+            other_2050    = all_2050 - aqua_2050,
+            aqua_diff     = (aqua_2050 - aqua_current) / aqua_current,
             other_diff    = (other_2050 - other_current) / other_current) %>%
-    fmutate(delta = aquaculture_diff - other_diff,
+    fmutate(delta = aqua_diff - other_diff,
             delta = ifelse(delta > 1, 1, delta),
             delta = ifelse(delta < -1, -1, delta))
 
-  diff_panel <- plot_map(data = compare_df, fill_var = delta) +
+  diff_plot <- plot_map(data = compare_df, fill_var = delta) +
     scale_fill_gradient2(low = div_pal[1], mid = div_pal[2], 
                         high = div_pal[3], midpoint = 0,
                         breaks = c(-1, -.5, 0, .5, 1),
                         labels = c('-100%', '-50%', '0%', '50%', '≥100%')) +
     theme(text = element_text(size = 9)) +
-    labs(fill = expression('∆' * N[pred] - '∆' * N[other]))
-
-
-  # p <- ggdraw() +
-  #   draw_plot(nspp_panel, x = .02, y = 0.5, height = .5, width = .98) +
-  #   draw_plot(dspp_panel, x = .02, y = 0.0, height = .5, width = .98) +
-  #   draw_label('A', x = 0, y = 1.0,  vjust = 1, hjust = 0, size = 14, fontface = 'bold') +
-  #   draw_label('B', x = 0, y = 0.5, vjust = 1, hjust = 0, size = 14, fontface = 'bold')
-  ggsave(fig_f, height = 3.1, width = 8, dpi = 300)
+    labs(fill = expression(atop('∆' * N[aqua], -'∆' * N[other])))
 }
-knitr::include_graphics(fig_f)
 ```
+
+Assemble three panel figure
+
+```{r fig aquaculture pull panels}
+if(!file.exists(figX_f)) {
+  nspp_panel <- get_panel(nspp_plot)
+  dspp_panel <- get_panel(dspp_plot)
+  diff_panel <- get_panel(diff_plot)
+  nspp_lgd <- get_legend(nspp_plot)
+  dspp_lgd <- get_legend(dspp_plot)
+  diff_lgd <- get_legend(diff_plot)
+}
+```
+
+```{r aquaculture spp richness assemble figure}
+if(!file.exists(figX_f)) {
+  x1 <- 0.02; w1 <- 0.88; h1 <- 0.33
+  x2 <- 0.90; w2 <- 0.10; h2 <- 0.33
+  ya <- 0.667; yb <- 0.333; yc <- 0.000
+
+  p <- ggdraw() +
+    ### plot panels
+    draw_plot(nspp_panel, x = x1, y = ya, height = h1, width = w1) +
+    draw_plot(dspp_panel, x = x1, y = yb, height = h1, width = w1) +
+    draw_plot(diff_panel, x = x1, y = yc, height = h1, width = w1) +
+    ### plot legends
+    draw_plot(nspp_lgd, x = x2-.012, y = ya, height = h2, width = w2) +
+    draw_plot(dspp_lgd, x = x2, y = yb, height = h2, width = w2) +
+    draw_plot(diff_lgd, x = x2, y = yc, height = h2, width = w2) +
+    ### draw labels
+    draw_label('A', x = 0, y = ya+h1, vjust = 1, hjust = 0, size = 14, fontface = 'bold') +
+    draw_label('B', x = 0, y = yb+h1, vjust = 1, hjust = 0, size = 14, fontface = 'bold') +
+    draw_label('C', x = 0, y = yc+h1, vjust = 1, hjust = 0, size = 14, fontface = 'bold')
+  ggsave(figX_f, height = 9, width = 8, dpi = 300)
+}
+knitr::include_graphics(figX_f)
+```
+
 
 ### Map of turnover
 
@@ -571,182 +600,3 @@ if(!file.exists(fig_file)) {
 knitr::include_graphics(fig_file)
 ```
 
-### Map fisheries impacts vs turnover
-
-Here let's do a bivariate plot to compare areas of high/low predicted fisheries impact to high/low projected turnover.  
-
-```{r process to quartiles}
-fe_turn_impact_f  <- here('_output/figure_data/fig_fe_turnover_fisheries.parquet')
-spp_turn_impact_f <- here('_output/figure_data/fig_spp_turnover_fisheries.parquet')
-
-if(any(!file.exists(c(fe_turn_impact_f, spp_turn_impact_f)))) {
-  impact_qtile <- fe_turn_qtile <- spp_turn_qtile <- spp_turn_r ### initialize three new maps
-
-  impact_qtile <- impact_qtile[[1]]
-  ### Set breaks for impacts
-  fish_r <- fish_impact_r[[3]] ### total fisheries impact
-
-  fish_thresholds <- quantile(values(fish_r), 
-                                probs = seq(0, 1, 0.25), 
-                                na.rm = TRUE, names = FALSE)
-  # [1] 0.000 0.081 0.096 0.144 1.550
-  ### NOTE: between RCP4.5 and 8.5, the 25% and 50% remain the same, but 75% and 100% increase
-  values(impact_qtile) <- data.table::fcase(values(fish_r) < fish_thresholds[2], 1L,
-                                            values(fish_r) < fish_thresholds[3], 2L,
-                                            values(fish_r) < fish_thresholds[4], 3L,
-                                            !is.na(values(fish_r)), 4L)
-
-  ### Set breaks for turnover
-  ### Note: since turnover is a physical thing, just set as .25, .5, .75 and call it a day.
-  ### Set zero turnover to be category 1
-  values(fe_turn_qtile)  <- ceiling(values(fe_turn_r * 4))
-  fe_turn_qtile[fe_turn_qtile == 0] <- 1
-  values(spp_turn_qtile) <- ceiling(values(spp_turn_r * 4))
-  spp_turn_qtile[spp_turn_qtile == 0] <- 1
-
-  fe_turn_df <- as.data.frame(fe_turn_qtile, xy = TRUE) %>%
-    setNames(c('x', 'y', 'fe_turn_rcp45', 'fe_turn_rcp85'))
-  spp_turn_df <- as.data.frame(spp_turn_qtile, xy = TRUE) %>%
-    setNames(c('x', 'y', 'spp_turn_rcp45', 'spp_turn_rcp85'))
-  impact_df <- as.data.frame(impact_qtile, xy = TRUE) %>%
-    setNames(c('x', 'y', 'impact_rcp85'))
-
-  fe_turn_impact_df <- collapse::join(fe_turn_df, impact_df, 
-    how = 'left', on = c('x', 'y')) %>%
-    mutate(bi_class_rcp45 = paste(fe_turn_rcp45, impact_rcp85, sep = '-'),
-           bi_class_rcp85 = paste(fe_turn_rcp85, impact_rcp85, sep = '-'))
-  spp_turn_impact_df <- collapse::join(spp_turn_df, impact_df, 
-    how = 'left', on = c('x', 'y')) %>%
-    mutate(bi_class_rcp45 = paste(spp_turn_rcp45, impact_rcp85, sep = '-'),
-           bi_class_rcp85 = paste(spp_turn_rcp85, impact_rcp85, sep = '-'))
-
-  write_parquet(fe_turn_impact_df,  fe_turn_impact_f)
-  write_parquet(spp_turn_impact_df, spp_turn_impact_f)
-}
-
-fe_turn_impact_df  <- read_parquet(fe_turn_impact_f)
-spp_turn_impact_df <- read_parquet(spp_turn_impact_f)
-
-```
-
-```{r set up biplot}
-calc_biplot_pcts <- function(df, scenario = 'rcp45') {
-  df_sum <- df %>% 
-    select(bi_class = all_of(paste0('bi_class_', scenario))) %>%
-    fsubset(!grepl('NA', bi_class)) %>%
-    fcount(bi_class) %>%
-    mutate(pct = N / sum(N)) %>%
-    separate_wider_delim(bi_class, names = c('turn', 'impact'), delim = '-') %>%
-    mutate(turn = as.integer(turn), impact = as.integer(impact),
-           lbl = paste0(round(pct, 3) * 100, '%'),
-           dark = impact >= 3 & turn >= 3)
-}
-fe_turn_pcts_rcp45 <- fe_turn_impact_df %>%
-  calc_biplot_pcts(scenario = 'rcp45')
-fe_turn_pcts_rcp85 <- fe_turn_impact_df %>%
-  calc_biplot_pcts(scenario = 'rcp85')
-spp_turn_pcts_rcp45 <- spp_turn_impact_df %>%
-  calc_biplot_pcts(scenario = 'rcp45')
-spp_turn_pcts_rcp85 <- spp_turn_impact_df %>%
-  calc_biplot_pcts(scenario = 'rcp85')
-```
-```{r build palette}
-
-map_pal_raw <- bi_pal(pal = 'GrPink2', dim = 4, preview = FALSE)
-  
-map_pal_mtx      <- matrix(map_pal_raw, nrow = 4, ncol = 4)
-map_pal_mtx[3, ] <- colorspace::lighten(map_pal_mtx[3, ], .1)
-map_pal_mtx[2, ] <- colorspace::lighten(map_pal_mtx[2, ], .2)
-map_pal_mtx[1, ] <- colorspace::lighten(map_pal_mtx[1, ], .3)
-map_pal_mtx[ , 3] <- colorspace::lighten(map_pal_mtx[ , 3], .1)
-map_pal_mtx[ , 2] <- colorspace::lighten(map_pal_mtx[ , 2], .2)
-map_pal_mtx[ , 1] <- colorspace::lighten(map_pal_mtx[ , 1], .3)
-map_pal_mtx[1, 1] <- '#ffffee'
-
-map_pal <- as.vector(map_pal_mtx) %>% setNames(names(map_pal_raw))
-
-panel_lgd_raw <- bi_legend(pal = map_pal, dim = 4,
-                           x = 'Turnover',
-                           y = 'Biomass removal')
-pnl_lgd_fe <- panel_lgd_raw +
-  geom_text(data = fe_turn_pcts_rcp45, 
-            aes(x = turn, y = impact, label = lbl, color = dark),
-            size = 3, show.legend = FALSE) +
-  scale_color_manual(values = c('grey20', 'white'))
-pnl_lgd_spp <- panel_lgd_raw +
-  geom_text(data = spp_turn_pcts_rcp45, 
-            aes(x = turn, y = impact, label = lbl, color = dark),
-            size = 3, show.legend = FALSE) +
-  scale_color_manual(values = c('grey20', 'white'))
-```
-
-#### FE turnover vs impacts, RCP4.5
-```{r fe_45}
-panel_fe_45 <- plot_map(data = fe_turn_impact_df, fill_var = bi_class_rcp45) +
-  bi_scale_fill(pal = map_pal, dim = 4) +
-  theme(axis.text = element_blank(), 
-        axis.title = element_blank(),
-        legend.position = 'none')
-
-# panel_fe_45
-```
-
-#### FE turnover vs impacts, RCP8.5
-```{r fe_85}
-panel_fe_85 <- plot_map(data = fe_turn_impact_df, fill_var = bi_class_rcp85) +
-  bi_scale_fill(pal = map_pal, dim = 4) +
-  theme(axis.text = element_blank(), 
-        axis.title = element_blank(),
-        legend.position = 'none')
-
-# panel_fe_85
-```
-
-#### Spp turnover vs impacts, RCP4.5
-```{r spp_45}
-panel_spp_45 <- plot_map(data = spp_turn_impact_df, fill_var = bi_class_rcp45) +
-  bi_scale_fill(pal = map_pal, dim = 4) +
-  theme(axis.text = element_blank(), 
-        axis.title = element_blank(),
-        legend.position = 'none')
-
-# panel_spp_45
-```
-
-#### Spp turnover vs impacts, RCP8.5
-```{r spp_85}
-panel_spp_85 <- plot_map(data = spp_turn_impact_df, fill_var = bi_class_rcp85) +
-  bi_scale_fill(pal = map_pal, dim = 4) +
-  theme(axis.text = element_blank(), 
-        axis.title = element_blank(),
-        legend.position = 'none')
-
-# panel_spp_85
-```
-
-#### Assemble turnover X impact figure
-
-Figure shows RCP4.5 spp and FE turnover vs. impacts.  Impacts are same, but FE turnover will be less than SPP turnover.
-
-```{r pull panels}
-# panel_a <- get_panel(panel_spp_45)
-# panel_b <- get_panel(panel_fe_45)
-panel_a <- panel_spp_45
-panel_b <- panel_fe_45
-bi_lgd_fe  <- pnl_lgd_fe
-bi_lgd_spp <- pnl_lgd_spp
-```
-
-```{r assemble panels}
-fig <- ggdraw() +
-  draw_plot(pnl_lgd_spp,  x = .68, y = .55, width = .40, height = .45) +
-  draw_plot(panel_spp_45, x = .012, y = 0.5, width = .74, height = .5) +
-  draw_plot(pnl_lgd_fe,   x = .68, y = .05, width = .40, height = .45) +
-  draw_plot(panel_fe_45,  x = .012, y = 0.0, width = .74, height = .5) +
-  draw_label('A', x = 0,  y = 1.0, hjust = 0, vjust = 1, size = 16, fontface = 'bold') +
-  draw_label('B', x = 0,  y = 0.5, hjust = 0, vjust = 1, size = 16, fontface = 'bold')
- 
-fig_file <- here('ms_figs/figX_spp_fe_impacts_fisheries.png')
-ggsave(fig_file, height = 5.75, width = 9.5, dpi = 300)
-knitr::include_graphics(fig_file)
-```
