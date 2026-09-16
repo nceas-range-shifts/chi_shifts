@@ -1,0 +1,278 @@
+---
+title: Test tuna atlas dataset against AquaX
+author: "Casey O'Hara"
+format:
+  html:
+    embed-resources: true
+execute:
+    warning: false
+---
+
+## Summary
+
+Juliette discovered that the AquaX dataset predicts no Bigeye Tuna (_thunnus obesus_) in a location where a high density of Bigeye Tuna is harvested according to the Tuna Atlas.  Let's see if this is a systematic problem!
+
+## Data
+
+* FAO. 2026. FIRMS Global Tuna Atlas (GTA). In: Fisheries and Aquaculture [online]. [Cited Tuesday, September 15th 2026].
+http://www.fao.org/fishery/collection/firms-tuna-atlas/en
+    * Data: https://zenodo.org/records/21114897 Tuna catch dataset at 5 degree resolution
+        * https://zenodo.org/records/21114897/files/global_catch_5deg_1m_firms_level0_harmonized.parquet?download=1
+    * Metadata: https://www.fao.org/fishery/collection/asfis/en
+        * https://www.fao.org/fishery/static/ASFIS/ASFIS_sp.zip
+* AquaX
+
+## Methods
+
+```{r}
+library(here)
+library(tidyverse)
+library(collapse)
+library(arrow)
+library(duckdb)
+library(terra)
+
+source(here('common_fxns.R'))
+```
+
+### Download tuna atlas data
+
+```{r}
+src <- 'https://zenodo.org/records/21114897/files/global_catch_5deg_1m_firms_level0_harmonized.parquet?download=1'
+dst <- here('_data/fao_2026/tuna/tuna_atlas_5deg.parquet')
+if(!file.exists(dst)) {
+    if(!dir.exists(dst)) dir.create(dirname(dst))
+    download.file(src, dst, mode = 'wb')
+}
+
+tuna_df <- read_parquet(dst) |> 
+    janitor::clean_names()
+```
+
+### Download tuna atlas metadata
+
+```{r}
+src <- 'https://www.fao.org/fishery/static/ASFIS/ASFIS_sp.zip'
+dst <- here('_data/fao_2026/tuna/ASFIS_sp_2026.1.csv')
+if(!file.exists(dst)) {
+    if(!dir.exists(dst)) dir.create(dirname(dst))
+    zip_tmp <- here('tmp/tuna_meta.zip')
+    download.file(src, zip_tmp, mode = 'wb')
+    unzip(zipfile = zip_tmp, exdir = dirname(dst))
+    unlink(zip_tmp)
+}
+
+gta_meta_df <- read_csv(dst) |> 
+    janitor::clean_names()
+```
+
+### Convert geographic identifier to lat-long
+
+The `geographic_identifier` field: The Tuna Atlas (and most tRFMO tuna datasets) use the CWP (Coordinating Working Party on Fishery Statistics) grid code with **S**ize, **Q**uadrant, **LA**titude, and **LON**gitude: **S|Q|LA|LON** (# of letters = # of digits)
+
+* Size digit = 6 indicates 5°×5°
+* Quadrant — which hemisphere combo the cell's corner sits in:
+    *  1:	NE (lat ≥0, lon ≥0)
+    *  2:	SE (lat <0, lon ≥0)
+    *  3:	SW (lat <0, lon <0)
+    *  4:	NW (lat ≥0, lon <0)
+* Latitude: Lat digits (next 2) — absolute latitude of the cell's corner nearest 0°N/0°E (i.e., the corner touching the Equator/Greenwich reference point), in whole degrees.
+* Lon digits (last 3) — same idea for longitude.
+
+UGHHH but we want cell CENTERS not CORNERS.  For positive, add 2.5, for negative, subtract 2.5.
+
+Also join with metadata to get scientific names.
+
+```{r}
+tuna_xy_df <- tuna_df |>
+    fsubset(time_start >= 2020) |>
+    separate_wider_position(geographic_identifier, 
+        widths = c(s = 1, q = 1, y = 2, x = 3)) |> 
+    fmutate(s = as.integer(s), q = as.integer(q), y = as.integer(y), x = as.integer(x)) |> 
+    fmutate(x = ifelse(q >= 3, -x - 2.5, x + 2.5),
+           y = ifelse(q %in% 2:3, -y - 2.5, y + 2.5)) |> 
+    join(gta_meta_df, on = c('species' = 'alpha3_code'), how = 'left')
+
+# bigeye_r <- tuna_xy_df |> 
+#     fsubset(scientific_name == 'Thunnus obesus') |> 
+#     fgroup_by(x, y) |> 
+#     fsummarize(total = sum(measurement_value)) |> 
+#     rast()
+# plot(bigeye_r)
+
+# tuna_xy_df$scientific_name %>% n_distinct()
+```
+
+### Check species against AquaX HSI
+
+```{r}
+spp_vec <- tuna_xy_df$scientific_name |> unique() |> sort()
+aquax_gta_meta <- get_aquax_meta() |> 
+    inner_join(gta_meta_df, by = c('scientific_name')) |> 
+    filter(scientific_name %in% spp_vec)
+### 52 of 67 total spp in the tuna dataset
+missing <- spp_vec[!spp_vec %in% aquax_gta_meta$scientific_name]
+### not at spp level - disregard!
+
+spp_to_run <- spp_vec[!spp_vec %in% missing]
+```
+
+* Filter tuna atlas catch map and summarize to each cell
+* Load AquaX distribution and aggregate to 5 degree blocks, averaging HSI
+* Linear model?  look for poor correlation between tuna catch and HSI
+    * HSI should correlate well with OBIS/GBIF observations
+    * If tuna catch and HSI poorly correlated, indicates maybe tuna catch is poorly correlated with OBIS/GBIF observations?
+* Or: Look at areas with low values of HSI and see if there are high values for fishing
+    * Quadrants - 
+
+
+```{r set up function}
+tuna_vs_hsi <- function(spp) {
+    ### spp <- 'thunnus obesus'
+    spp <- tolower(spp)
+
+    ### generate sdm at 5 deg resolution, averaging HSI values
+    spp_id_aquax <- aquax_gta_meta |> 
+        filter(tolower(scientific_name) == spp) |> 
+        pull(aphia_id)
+    spp_sdm_aquax_df <- get_sdm(spp_id_aquax, scenario = 'current', 
+            apply_thresh = FALSE)
+    cutoff <- spp_sdm_aquax_df$cutoff |> unique()
+        
+    spp_sdm_aquax_r <- spp_sdm_aquax_df |> 
+        cell_id_to_xy()  |> 
+        select(x, y, current) |> 
+        rast(crs = 'epsg:4326') |> 
+        extend(ext(-180, 180, -90, 90))
+
+    sdm_agg_r <- aggregate(spp_sdm_aquax_r, fact = 100, fun = 'mean', na.rm = TRUE)
+    n_sdm  <- sum(!is.na(values(sdm_agg_r)))
+
+    ### Generate catch map summarizing across 2020-present
+    spp_gta_df <- tuna_xy_df |> 
+        ### put tolower() in mutate instead of filter
+        mutate(scientific_name = tolower(scientific_name)) |> 
+        filter(scientific_name == spp) |> 
+        select(x, y, measurement_value) |> 
+        fgroup_by(x, y) |> 
+        fsummarize(total = sum(measurement_value)) |> 
+        ungroup()
+        
+    ### use sdm raster as template
+    spp_gta_r <- rasterize(vect(spp_gta_df, geom = c('x', 'y')),
+            y = sdm_agg_r, field = 'total') |> 
+        setNames('total')
+
+    ### combine rasters and go from there
+    df <- c(spp_gta_r, sdm_agg_r) |> 
+        as.data.frame(xy = TRUE) |> 
+        mutate(current = ifelse(is.na(current), 0, current),
+               spp = spp,
+               cutoff = cutoff,
+               n_aquax = n_sdm)
+    # ggplot(df, aes(x = current, y = log(total))) + geom_point()
+
+    return(df)
+}
+```
+
+For each spp, summarize total catch, and look at HSI values in cells with catch
+
+```{r}
+test_outf <- here('tmp/tuna_test.csv')
+if(!file.exists(test_outf)) {
+    # tuna_test_list <- lapply(X = spp_to_run, FUN = tuna_vs_hsi)
+    tuna_test_list <- vector('list', length = length(spp_to_run))
+    for(i in seq_along(spp_to_run)) {
+        spp <- spp_to_run[i]
+        tuna_test_list[[i]] <- tuna_vs_hsi(spp)
+    }
+    tuna_test_df <- rowbind(tuna_test_list)
+    write_csv(tuna_test_df, test_outf)
+}
+tuna_test_df <- read_csv(test_outf) |> 
+    mutate(presence = current >= cutoff)
+
+high_catch <- mean(log(tuna_test_df$total), na.rm = TRUE)
+
+ggplot(tuna_test_df, aes(x = current, y = log(total), color = presence)) + 
+    geom_point() +
+    geom_hline(yintercept = high_catch)
+```
+
+### Identify problematic species
+
+Problematic spp might be those with a high proportion of high-catch cells in non-suitable locations.
+
+```{r}
+problems_df <- tuna_test_df |> 
+    filter(!is.na(total)) |> 
+    group_by(spp) |> 
+    mutate(high = log(total) > mean(log(total))) |> 
+    ungroup()
+
+problem_summary_df <- problems_df |> 
+    group_by(spp, n_aquax) |> 
+    summarize(n_catch_cells = n(),
+              n_problem = sum(high & !presence),
+              pct_prob = n_problem / n_catch_cells,
+              pct_fished = n_catch_cells / first(n_aquax)) |> 
+    ungroup() |> 
+    mutate(add_label = pct_fished > .5 & n_catch_cells > 600 |
+                       pct_prob > .35)
+
+ggplot(problem_summary_df, aes(x = pct_prob, y = pct_fished)) +
+    geom_point(aes(size = n_catch_cells)) +
+    ggrepel::geom_text_repel(data = problem_summary_df %>% filter(add_label),
+              aes(label = spp), hjust = 0, nudge_x = .02)
+```
+
+### Plot AquaX HSI vs fishing for select spp
+
+For large-ranged species with fishing making up a substantial portion of their range, plot the AquaX distribution and the GTA distribution.  Use the 5 degree aggregated data.
+
+```{r}
+#| fig-width: 6
+#| fig-height: 8
+
+high_catch_spp <- tuna_test_df |> 
+    group_by(spp) |> 
+    summarize(total = sum(total, na.rm = TRUE)) |> 
+    filter(total > 1e6)
+compare_spp <- problem_summary_df |> 
+    filter(add_label | str_detect(spp, 'thunnus') | spp %in% high_catch_spp$spp) |> 
+    pull(spp)
+
+for(s in compare_spp) {
+    # s <- compare_spp[1]
+    spp_map <- tuna_test_df |> 
+        filter(spp == s) |> 
+        mutate(current = ifelse(current == 0, NA, current),
+               high_catch = log(total) > mean(log(total), na.rm = TRUE),
+               ### let's lower the "presence" threshold for the large cell
+               presence = current >= cutoff * .7)
+    aquax_plot <- ggplot(spp_map, aes(x, y, fill = current)) +
+        geom_raster(show.legend = FALSE) +
+        scale_fill_viridis_c() +
+        coord_fixed() +
+        theme_void() +
+        labs(title = paste('AquaX (aggr to 5 deg):', s))
+    gta_plot <- ggplot(spp_map, aes(x, y, fill = log(total))) +
+        geom_raster(show.legend = FALSE) +
+        scale_fill_viridis_c() +
+        coord_fixed() +
+        theme_void() +
+        labs(title = paste('GTA (5 deg):', s))
+    problem_plot <- ggplot() +
+        geom_raster(data = spp_map, aes(x, y), fill = 'grey80') +
+        geom_raster(data = spp_map %>% filter(high_catch & !presence), 
+                    aes(x, y), fill = 'red') +
+        coord_fixed() +
+        theme_void() +
+        labs(title = paste('Problem areas:', s))
+    tri_plot <- cowplot::plot_grid(aquax_plot, gta_plot, problem_plot, ncol = 1)
+
+    print(tri_plot)
+}
+
+```

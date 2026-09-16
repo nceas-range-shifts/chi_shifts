@@ -50,7 +50,6 @@ Layers include `impact_demersal`, `impact_pelagic`, and `impact_total` (biomass-
 
 ```{r fisheries impacts}
 fish_impact_r <- rast(here('_output/impact_maps/biomass_removal_impact.tif'))
-
 ```
 
 
@@ -133,8 +132,8 @@ if(any(!file.exists(c(fe_turn_impact_f, spp_turn_impact_f)))) {
   fish_thresholds <- quantile(values(fish_r), 
                                 probs = seq(0, 1, 0.25), 
                                 na.rm = TRUE, names = FALSE)
-  # [1] 0.000 0.081 0.096 0.144 1.550
-  ### NOTE: between RCP4.5 and 8.5, the 25% and 50% remain the same, but 75% and 100% increase
+  # [1] 0.000000000 0.001827653 0.004922966 0.011133153 0.722849846
+
   values(impact_qtile) <- data.table::fcase(values(fish_r) < fish_thresholds[2], 1L,
                                             values(fish_r) < fish_thresholds[3], 2L,
                                             values(fish_r) < fish_thresholds[4], 3L,
