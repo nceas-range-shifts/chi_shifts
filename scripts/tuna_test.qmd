@@ -274,5 +274,4 @@ for(s in compare_spp) {
 
     print(tri_plot)
 }
-
 ```

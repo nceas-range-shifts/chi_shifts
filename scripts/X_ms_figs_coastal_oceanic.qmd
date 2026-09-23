@@ -1,0 +1,93 @@
+---
+title: MS Figs coastal vs oceanic
+author: "Casey O'Hara"
+format:
+  html:
+    embed-resources: true
+execute:
+    warning: false
+---
+
+## Summary
+
+Generate MS figures for species and functional turnover:
+
+* Species and functional richness, current and projected change
+* Species and richness projected change in richness for large predators
+    * Species and richness projected change in richness for fishery species (too similar?)
+* Spp and FE change due to extirpation and colonization
+* Overlap of SPP and FE turnover with fisheries biomass removal impacts
+
+
+## Data
+
+* GEBCO gridded elevation - GEBCO_2026 Grid (sub-ice topo/bathy): https://www.gebco.net/data-products/gridded-bathymetry-data#global
+    * download link: https://dap.ceda.ac.uk/bodc/gebco/global/gebco_2026/sub_ice_topography_bathymetry/netcdf/GEBCO_2026_sub_ice.zip?download=1
+    * Stored in `_data/gebco_2026/GEBCO_2026_sub_ice_0.05.nc`
+        * This is an aggregated NetCDF from 15 arc-second to 0.05 degree; the original 7 GB NetCDF is aggregated then deleted.
+
+## Methods
+
+Load turnover maps, partition out by neritic/coastal (<= 200m) and oceanic (>200m) using GEBCO bathymetry.
+
+```{r}
+library(tidyverse)
+library(here)
+library(terra)
+library(sf)
+library(arrow)
+library(collapse)
+library(cowplot)
+```
+
+### Read in and rasterize turnover metrics
+
+THese rasters were created in scripts 3 (spp turnover) and 4 (fe turnover) in the Behrmann projection.
+
+```{r read rasts}
+
+spp_turn_r <- rast(here('_output/spp_turnover_maps/all_spp_turnover.tif'))
+fe_turn_r  <- rast(here('_output/fe_turnover_maps/all_fe_turnover.tif'))
+
+# plot(spp_turn_r); plot(fe_turn_r)
+```
+
+### Read in and transform GEBCO bathymetry
+
+```{r}
+bathy_r_4326 <- rast(here('_data/gebco_2026/GEBCO_2026_sub_ice_0.05.nc'))
+bathy_r_4326[bathy_r_4326 >= -200] <- 1 ### 1 is coastal
+bathy_r_4326[bathy_r_4326 < -200]  <- 2 ### 2 is oceanic
+
+bathy_r <- project(bathy_r_4326, spp_turn_r) |> 
+  round() |> 
+  mask(spp_turn_r[[1]])
+```
+
+### Compare oceanic and coastal turnover
+
+
+```{r}
+combined_r <- c(spp_turn_r[[1]], fe_turn_r[[1]], bathy_r)
+combined_df <- as.data.frame(combined_r, xy = TRUE) |> 
+  setNames(c('x', 'y', 'spp', 'fe', 'depth'))
+
+summary_df <- combined_df |> 
+  slice_sample(n = 1e6, by = depth) |> 
+  pivot_longer(
+    cols = c(spp, fe),
+    names_to = "variable",
+    values_to = "turnover"
+  ) |> 
+  group_by(variable) |> 
+  summarise(
+    test = list(t.test(turnover ~ depth)), 
+    .groups = "drop"
+  ) |> 
+  mutate(tidy_result = map(test, broom::tidy)) %>%
+  unnest(tidy_result)
+
+summary_df |> select(-test, -parameter, -method)
+```
+
+Do we need to go any further, e.g., a visual?  seems pretty clear cut

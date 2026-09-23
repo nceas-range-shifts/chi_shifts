@@ -1,0 +1,41 @@
+---
+title: Download data for fisheries from FAO and ISIMIP
+author: "Casey O'Hara"
+format:
+  html:
+    embed-resources: true
+---
+
+## Summary
+
+* GEBCO gridded elevation - GEBCO_2026 Grid (sub-ice topo/bathy): https://www.gebco.net/data-products/gridded-bathymetry-data#global
+    * download link: https://dap.ceda.ac.uk/bodc/gebco/global/gebco_2026/sub_ice_topography_bathymetry/netcdf/GEBCO_2026_sub_ice.zip?download=1
+
+## Methods
+
+Make sure to manually add these to .gitignore!
+
+### Download NetCDF
+
+```{r}
+local_f <- here::here('_data/gebco_2026', 'GEBCO_2026_sub_ice', 'GEBCO_2026_sub_ice_0.05.nc')
+if(!file.exists(local_f)) {
+  src_url <- 'https://dap.ceda.ac.uk/bodc/gebco/global/gebco_2026/sub_ice_topography_bathymetry/netcdf/GEBCO_2026_sub_ice.zip?download=1'
+  destfile <- here::here('gebco.zip')
+  download.file(src_url, destfile, mode = 'wb')
+
+  exdir <- here::here('_data/gebco_2026')
+  unzip(destfile, exdir = exdir)
+  file.remove(destfile)
+
+  ### aggregate to 0.05 degree resolution (from 0.00416667)
+  ### downloaded and unzipped files:
+  f_raw <- here::here('_data/gebco_2026', 'GEBCO_2026_sub_ice', 'GEBCO_2026_sub_ice.nc')
+  r_raw <- rast(f_raw)
+  r1 <- aggregate(r_raw, 12)
+
+  writeRaster(r1, local_f)
+  unlink(f_raw) ### 7 GB file!
+}
+```
+
