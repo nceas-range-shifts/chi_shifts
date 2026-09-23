@@ -1,5 +1,5 @@
 ---
-title: Identify IUCN species and align to WoRMS
+title: Download IUCN Red List assessments and align to WoRMS
 author: "Casey O'Hara"
 format:
   html:
@@ -8,7 +8,16 @@ format:
 
 ## Summary
 
-Access IUCN listed marine species and align with WoRMS taxonomy.
+Access IUCN Red List assessments for marine species (and comprehensively assessed groups) via the IUCN API, then align species names to WoRMS accepted names and AphiaIDs. Results are saved to `_data/iucn_redlist_2026/`.
+
+Data sources:
+
+* IUCN Red List API — requires API key set as `IUCN_API_KEY` in `.Renviron`
+  * R package: `iucnredlist` (https://github.com/IUCN-UK/iucnredlist)
+  * Citation: IUCN (2026). The IUCN Red List of Threatened Species. Version 2026. https://www.iucnredlist.org
+* WoRMS REST API (for name resolution and synonym lookup): https://www.marinespecies.org/rest/
+  * Citation: WoRMS Editorial Board (2026). World Register of Marine Species. https://doi.org/10.14284/170
+* Species name/AphiaID update table: https://raw.githubusercontent.com/mapping-marine-spp-vuln/spp_vuln_framework/refs/heads/master/update/update_sciname_aphia.csv
 
 
 ## Methods

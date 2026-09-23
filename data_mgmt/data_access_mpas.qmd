@@ -8,11 +8,13 @@ format:
 
 ## Summary
 
-Download stressor and habitat data from:
+Download and rasterize marine protected area data from the World Database on Protected Areas (WDPA) and World Database on Other Effective Area-based Conservation Measures (WD-OECM).
 
-* UNEP-WCMC and IUCN (2026), Protected Planet: The World Database on Protected Areas (WDPA) and World Database on Other Effective Area-based Conservation Measures (WD-OECM) [Online], July 2026, Cambridge, UK: UNEP-WCMC and IUCN. Available at: www.protectedplanet.net.
-* https://www.protectedplanet.net/en/search-areas?filters%5Bis_type%5D%5B%5D=marine
-* download link for WDPA and WDOECM (July 2026): https://d1gam3xoknrgr2.cloudfront.net/current/WDPA_WDOECM_Jul2026_Public_1b091e2b51c258eb3b24328044a4a3d6979e00fa2029d7538aef2befd46da362_shp.zip
+* UNEP-WCMC and IUCN (2026). Protected Planet: The World Database on Protected Areas (WDPA) and World Database on Other Effective Area-based Conservation Measures (WD-OECM) [Online], July 2026, Cambridge, UK: UNEP-WCMC and IUCN. Available at: www.protectedplanet.net.
+* Download page (marine filter): https://www.protectedplanet.net/en/search-areas?filters%5Bis_type%5D%5B%5D=marine
+* Direct download link (July 2026): https://d1gam3xoknrgr2.cloudfront.net/current/WDPA_WDOECM_Jul2026_Public_1b091e2b51c258eb3b24328044a4a3d6979e00fa2029d7538aef2befd46da362_shp.zip
+
+Shapefiles are merged into a single GeoPackage, then rasterized at 0.05° resolution — separately for MPAs and OECMs — recording the minimum IUCN protection category per cell.
 
 
 

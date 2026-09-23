@@ -1,0 +1,30 @@
+---
+title: Download and assemble functional entity traits
+author: "Casey O'Hara"
+format:
+  html:
+    embed-resources: true
+---
+
+## Summary
+
+Download per-species functional trait tables, resolve duplicate entries, update species names to WoRMS accepted names, and combine into a single trait table saved to `_data/ohara_2024/funct_entity_traits/fe_spp_traits.csv`. Traits cover body length, trophic level, mobility, water column position, age at maturity, and fecundity.
+
+Based on:
+* O'Hara, C. C., et al. (2024). Cumulative human impacts on global marine fauna highlight risk to biological and functional diversity. *PLOS ONE*, 19(9), e0309788. https://doi.org/10.1371/journal.pone.0309788
+
+Trait data sourced from https://github.com/mapping-marine-spp-vuln/spp_vuln_mapping/tree/main/_data/traits_grouping:
+
+* [`trait_length_cm.csv`](https://raw.githubusercontent.com/mapping-marine-spp-vuln/spp_vuln_mapping/refs/heads/main/_data/traits_grouping/trait_length_cm.csv)
+* [`trait_mobility.csv`](https://raw.githubusercontent.com/mapping-marine-spp-vuln/spp_vuln_mapping/refs/heads/main/_data/traits_grouping/trait_mobility.csv)
+* [`trait_reproduction.csv`](https://raw.githubusercontent.com/mapping-marine-spp-vuln/spp_vuln_mapping/refs/heads/main/_data/traits_grouping/trait_reproduction.csv)
+* [`trait_trophic_level.csv`](https://raw.githubusercontent.com/mapping-marine-spp-vuln/spp_vuln_mapping/refs/heads/main/_data/traits_grouping/trait_trophic_level.csv)
+* [`trait_water_col_position.csv`](https://raw.githubusercontent.com/mapping-marine-spp-vuln/spp_vuln_mapping/refs/heads/main/_data/traits_grouping/trait_water_col_position.csv)
+
+Species name/AphiaID update lookup from https://github.com/mapping-marine-spp-vuln/spp_vuln_framework:
+
+* [`update_sciname_aphia.csv`](https://raw.githubusercontent.com/mapping-marine-spp-vuln/spp_vuln_framework/refs/heads/master/update/update_sciname_aphia.csv)
+
+## Methods
+
+

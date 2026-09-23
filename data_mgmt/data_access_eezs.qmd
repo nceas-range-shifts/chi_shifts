@@ -8,10 +8,15 @@ format:
 
 ## Summary
 
-Create zonal rasters for EEZs based on region (continent-scale), sub-region (subcontinental), intermediate (further regionalized) for more detailed MPA analysis.
+Create zonal rasters for EEZs and UN M49 georegions (continent, sub-region, intermediate) for use in MPA and regional analyses. Also includes the ESRI World Continents polygon layer for continent-level aggregation.
 
-* Marine Regions attribute table: https://www.marineregions.org/eezattribute.php
-* UN M49 codes: https://unstats.un.org/unsd/methodology/m49/overview/# (semicolon-separated values)
+Data sources:
+
+* EEZ polygons — Marine Regions, World EEZ v12 (2023-10-25), stored on shared server at `/home/shares/usgs-cap-rangeshifts/spatial/World_EEZ_v12_20231025_gpkg/eez_v12.gpkg`
+  * Attribute table: https://www.marineregions.org/eezattribute.php
+  * Citation: Flanders Marine Institute (2023). Maritime Boundaries Geodatabase: Maritime Boundaries and Exclusive Economic Zones (200NM), version 12. Available online at https://www.marineregions.org/. https://doi.org/10.14284/632
+* UN M49 codes — https://unstats.un.org/unsd/methodology/m49/overview/ (semicolon-separated values)
+* ESRI World Continents — https://hub.arcgis.com/datasets/esri::world-continents/explore
 
 ## Methods
 

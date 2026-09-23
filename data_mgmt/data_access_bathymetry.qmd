@@ -1,5 +1,5 @@
 ---
-title: Download data for fisheries from FAO and ISIMIP
+title: Download GEBCO bathymetry data
 author: "Casey O'Hara"
 format:
   html:
@@ -8,8 +8,13 @@ format:
 
 ## Summary
 
-* GEBCO gridded elevation - GEBCO_2026 Grid (sub-ice topo/bathy): https://www.gebco.net/data-products/gridded-bathymetry-data#global
-    * download link: https://dap.ceda.ac.uk/bodc/gebco/global/gebco_2026/sub_ice_topography_bathymetry/netcdf/GEBCO_2026_sub_ice.zip?download=1
+Download and reproject global bathymetry from GEBCO:
+
+* GEBCO Compilation Group (2026). GEBCO 2026 Grid (sub-ice topo/bathy).
+* Product page: https://www.gebco.net/data-products/gridded-bathymetry-data#global
+* Download link: https://dap.ceda.ac.uk/bodc/gebco/global/gebco_2026/sub_ice_topography_bathymetry/netcdf/GEBCO_2026_sub_ice.zip?download=1
+
+The raw 15-arcsecond (~0.00417°) NetCDF is downloaded, aggregated by a factor of 12, and saved at 0.05° resolution to `_data/gebco_2026/`. The original 7 GB file is deleted after aggregation.
 
 ## Methods
 

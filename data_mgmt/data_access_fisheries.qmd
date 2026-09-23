@@ -1,5 +1,5 @@
 ---
-title: Download data for fisheries from FAO and ISIMIP
+title: Download fisheries data from FAO and ISIMIP
 author: "Casey O'Hara"
 format:
   html:
@@ -8,9 +8,18 @@ format:
 
 ## Summary
 
-Download current fisheries data from FAO: Download files as .zip from https://www.fao.org/fishery/collection/capture/en and https://www.fao.org/fishery/collection/aquaculture/en.
+Download observed fisheries statistics from FAO and projected marine biomass outputs from ISIMIP3b.
 
-Download fisheries models from ISIMIP: .nc files from https://data.isimip.org/search/tree/ISIMIP3b
+### FAO fisheries statistics (saved to `_data/fao_2026/`)
+* Capture fisheries: https://www.fao.org/fishery/collection/capture/en
+  * Direct download: https://www.fao.org/fishery/static/Data/Capture_2026.1.0.zip
+* Aquaculture production: https://www.fao.org/fishery/collection/aquaculture/en
+  * Direct download: https://www.fao.org/fishery/static/Data/Aquaculture_2026.1.0.zip
+
+### ISIMIP3b EcoOcean projections (saved to `_data/isimip_2026/`)
+* Model: EcoOcean, forced with GFDL-ESM4 under SSP5-8.5
+* Data portal: https://data.isimip.org/search/tree/ISIMIP3b
+* File list: `_data/isimip_2026/filelist.txt`
 
 
 ## Methods

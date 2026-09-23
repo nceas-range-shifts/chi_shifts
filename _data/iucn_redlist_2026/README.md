@@ -1,25 +1,27 @@
-Files in this directory are created by data_mgmt/4_data_access_iucn.qmd:
+# `_data/iucn_redlist_2026/` — IUCN Red List Assessments and WoRMS Crosswalks
 
-* iucn_marine_assessments.csv pulls assessment IDs (most recent) associated with  
-  species flagged as "marine" system
-* iucn_comp_group_assessments.csv pulls assessment IDs (most recent) associated  
-  with comprehensively assessed groups containing marine species (and in many 
-  cases containing non-marine species)
-* iucn_species_assessments.csv contains IUCN sciname, assessment_id, 
-  sis_taxon_id, redlist_version, redlist_category, assessed_year, scope
-  
-The iucn_species_assessments.csv are then combined with Aphia ID values from:
+## Script
+`data_mgmt/data_access_iucn.qmd`
 
-* AquaX metadata
-* IUCN/WoRMS alignment from spp_vuln_framework
+## Contents
+- `iucn_species_assessments.csv` — IUCN sciname, assessment_id, sis_taxon_id, redlist_version, redlist_category, assessed_year, scope for all marine and comprehensively assessed species
+- `iucn_worms_aphia_id_complete.csv` — final crosswalk: IUCN sciname → WoRMS valid name + AphiaID, with AquaX SDM status
+- `int/` — intermediate files:
+  - `iucn_marine_assessments.csv` — assessment IDs for species flagged as marine system
+  - `iucn_comp_group_assessments.csv` — assessment IDs for comprehensively assessed groups
+  - `iucn_worms_check_pass1.csv` — WoRMS API lookup results for unmatched names (via `taxize`)
+  - `worms_aphia_to_iucn_sis.csv` — WoRMS external ID endpoint results (Aphia → SIS)
+  - `worms_synonyms.csv` — WoRMS synonym lookup results
+  - `aquax_iucn_manual.csv` — manually resolved AquaX species with no automatic IUCN match
 
-Species scinames not matched through these lists are then pinged to the WoRMS
-API using the `taxize::classification` function.  Results are stored as:
+## Source / URL
+- IUCN Red List API: requires API key set as `IUCN_API_KEY` in `.Renviron`
+  - R package: `iucnredlist` (https://github.com/IUCN-UK/iucnredlist)
+- WoRMS API (via `taxize` and direct REST calls): https://www.marinespecies.org/rest/
+- Species name/AphiaID update table: https://raw.githubusercontent.com/mapping-marine-spp-vuln/spp_vuln_framework/refs/heads/master/update/update_sciname_aphia.csv
 
-* iucn_worms_check_pass1.csv
+## Citation
+IUCN (2026). The IUCN Red List of Threatened Species. Version 2026. https://www.iucnredlist.org
 
-Finally, a set of IUCN scinames matched to WoRMS accepted names, including
-IUCN sis_taxon_id, WoRMS aphia_id, and WoRMS valid_sciname are saved out:
-
-* iucn_worms_aphia_id_complete.csv
+WoRMS Editorial Board (2026). World Register of Marine Species. Available from https://www.marinespecies.org at VLIZ. https://doi.org/10.14284/170
 
