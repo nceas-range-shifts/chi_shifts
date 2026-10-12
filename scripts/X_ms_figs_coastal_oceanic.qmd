@@ -72,13 +72,20 @@ combined_r <- c(spp_turn_r[[1]], fe_turn_r[[1]], bathy_r)
 combined_df <- as.data.frame(combined_r, xy = TRUE) |> 
   setNames(c('x', 'y', 'spp', 'fe', 'depth'))
 
-summary_df <- combined_df |> 
+long_df <- combined_df |> 
   slice_sample(n = 1e6, by = depth) |> 
   pivot_longer(
     cols = c(spp, fe),
     names_to = "variable",
     values_to = "turnover"
-  ) |> 
+  )
+
+stats_df <- long_df |> 
+  group_by(variable, depth) |> 
+  summarize(mean = mean(turnover, na.rm = TRUE),
+            sd = sd(turnover, na.rm = TRUE))
+
+summary_df <- long_df |> 
   group_by(variable) |> 
   summarise(
     test = list(t.test(turnover ~ depth)), 

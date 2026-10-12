@@ -1,0 +1,96 @@
+---
+title: Download biomass data from ISIMIP
+author: "Casey O'Hara"
+format:
+  html:
+    embed-resources: true
+---
+
+## Summary
+
+Download projected marine biomass outputs from ISIMIP3b.
+
+### ISIMIP3b EcoOcean projections (saved to `_data/isimip_2026/`)
+* Model: EcoOcean, forced with GFDL-ESM4 under SSP5-8.5
+* Data portal: https://data.isimip.org/search/tree/ISIMIP3b
+* File list: `_data/isimip_2026/filelist.txt`
+
+
+## Methods
+
+Make sure to manually add these to .gitignore!
+
+```{r}
+library(tidyverse)
+```
+
+### Identify ISIMIP NetCDFs available
+
+From the search tree, capture all variables across all models to identify NetCDFs that are available.
+
+Identifiers in filename:
+
+* Model: Biomass model (`apecosm`, `boats`, `dbpm`, `ecoocean`, `feisty`, `zoomss`)
+* GCM: climate model driving simulations (`gfdl-esm4`, `ipsl-cm6a-lr`)
+* Bias correction: all `nobasd`
+* Climate scenario: `historical`, `picontrol` (pre-industrial control), `ssp126`, `ssp585`
+* Socio-econ scenario: `2015soc-from-histsoc` (2015 human influences carried forward), `histsoc` (historical social influences), `nat` (no human influences)
+* Sensitivity scenario: all `default`
+* Variable: various; `b` biomass, `d` demersal, `p` pelagic, `t` total, `c` is consumer biomass in some places (`cb`) and catch in others
+* Region: all `global`
+* Timestep: `annual`, `monthly`
+* Start/end year: `1850_2014`, `1950_2014`, `2015_2100`
+
+```{r}
+filelist_all <- readr::read_lines(here::here('_data/isimip_2026/filelist.txt'))
+
+filelist_df <- data.frame(f = filelist_all) |> 
+  mutate(basename = basename(f)) |> 
+  separate_wider_delim(cols = basename, delim = '_',
+                       names = c('model', 'climate_driver', 'bias_correction', 
+                                 'climate_scenario', 'socioecon_scenario',
+                                 'sensitivity_scenario', 'variable', 'region', 
+                                 'timestep', 'year_start', 'year_end'), 
+                       cols_remove = FALSE)
+
+DT::datatable(filelist_df %>% select(-f))
+filelist_df |> select(climate_scenario, year_start) |> table()
+```
+
+### Select files for analysis
+
+The files we need include all models and drivers, the `historical` and `SSP5-8.5` climate scenarios (which self-sort for `year_start` and `year_end`), the `nat` socioeconomic scenario, and different variables of biomass.  Drop log10 biomass variables (non-log biomass is always available).
+
+```{r}
+scenario_files_df <- filelist_df |> 
+  filter(climate_scenario %in% c("historical", "ssp585")) |>
+  filter(socioecon_scenario == "nat") |> 
+  filter(!str_detect(variable, 'log10'))
+scenario_files_df |> select(variable, model) |> table()
+
+write_csv(scenario_files_df, here::here('_data/isimip_2026/scenario_files.csv'))
+```
+
+### From selected variables, download NetCDFs
+
+```{r}
+data_dir <- here::here('_data/isimip_2026/rasts')
+if(!dir.exists(data_dir)) dir.create(data_dir)
+
+file_df <- scenario_files_df |> 
+  select(source = f) |>
+  mutate(dest = file.path(data_dir, basename(source)))
+
+### set longer timeout (default 60 sec) to accommodate big files
+options(timeout = max(300, getOption("timeout")))
+
+for(i in 1:nrow(file_df)) {
+  ### i <- 1
+  src <- file_df$source[i]
+  dst <- file_df$dest[i]
+  if(file.exists(dst)) next()
+  
+  ### else:
+  download.file(src, dst, mode = 'wb')
+}
+```

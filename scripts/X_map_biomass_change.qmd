@@ -1,0 +1,207 @@
+---
+title: Map biomass change
+author: "Casey O'Hara"
+format:
+  html:
+    embed-resources: true
+execute:
+    warning: false
+---
+
+## Summary
+
+Gather historical and projected biomass model results and summarize into a mean/sd layer.  Then, calculate a "biomass loss" layer, where 0 = no lost biomass, 1 = max lost biomass.
+
+Project to Behrmann 5 km and gapfill if necessary.
+
+## Data
+
+* Multiple biomass models from ISIMIP: .nc files from https://data.isimip.org/search/tree/ISIMIP3b
+* See `data_access_isimip` script for download
+* NetCDF files stored in `_data/isimip_2026/rasts/` with `_data/isimip_2026/filelist.txt` for filenames
+
+## Methods
+
+```{r attach packages}
+#| message: false
+#| 
+library(tidyverse)
+library(here)
+library(arrow)
+library(collapse)
+library(here)
+library(terra)
+
+source(here('common_fxns.R'))
+```
+
+
+### Set up analysis
+
+For the main result, focus on the Total Consumer Biomass layers (not by size class or depth layer). TCB is available for all models.
+
+```{r}
+scenarios_df <- read_csv(here('_data/isimip_2026/scenario_files.csv')) |> 
+  mutate(base_f = basename(f))
+
+rast_df <- data.frame(repo_file = list.files(here('_data/isimip_2026/rasts'), 
+                                                full.names = TRUE)) |> 
+  mutate(base_f = basename(repo_file)) |> 
+  inner_join(scenarios_df, by = 'base_f') |> 
+  select(-base_f)
+```
+
+Helper functions: 
+
+* `grab_rast_layers()` accesses a single `.nc` file and pulls specific years from it, then calculates mean/sd over all increments.
+
+```{r raster processing function}
+grab_rast_layers <- function(m, d, c, s = 'nat', v, y) {
+  df <- rast_df ### from global
+
+  rast_f <- df |> 
+    filter(model == m & climate_driver == d & climate_scenario == c & socioecon_scenario == s & variable == v) |> 
+    pull(repo_file)
+  if(length(rast_f) > 1) stop('only one layer plz')
+  if(length(rast_f) == 0) stop('no layer found')
+  r <- rast(rast_f)
+
+  yrs <- convert_years(r, c)
+
+  idx <- which(yrs >= min(y) & yrs <= max(y))
+  if(length(idx) == 0) stop('no years found')
+  r_sub <- r[[idx]]
+
+  return(r_sub)
+}
+
+convert_years <- function(r, c) {
+  ### some historical layers have screwed up years...
+  ### some have time as a Date object, others not so much?  
+  ### * dbpm has Date check how that works
+  ### * boats and apecosm seem to have numeric?
+  r_time <- terra::time(r)
+  # browser()
+  if(class(r_time) == 'Date') r_time <- lubridate::year(r_time)
+  if(c == 'historical' & max(floor(r_time)) != 2014) {
+    offset <- floor(2014 - max(r_time))
+    r_time <- r_time + offset + 1
+  } else if(c == 'ssp585' & max(floor(r_time)) != 2100) {
+    offset <- floor(2100 - max(r_time))
+    r_time <- r_time + offset + 1
+  }
+  return(floor(r_time))
+} 
+```
+
+### Process biomass layers
+
+Best practice for ISIMIP ensemble model:
+
+* Collapse drivers within each model (so models with two drivers don't dominate)
+* Calculate relative change per model, not absolute biomass
+* Then calc summary stats across all models, including mean, SD, and agreement (how many models agree on the direction of change) 
+
+#### Calculate absolute biomass change per model
+
+For each given model/driver combination, load historical layers and projected layers.  Calc mean difference.
+```{r}
+mdl_driver_df <- rast_df |> 
+  select(model, climate_driver) |> 
+  distinct()
+
+mvec <- mdl_driver_df$model |> unique()
+mdl_rast_list <- vector('list', length = length(mvec)) |> 
+  setNames(mvec)
+for(m in mvec) {
+  ### m <- mvec[1]
+  mdl_df <- mdl_driver_df |> filter(model == m)
+  dvec <- mdl_df$climate_driver |> unique()
+  drv_rast_list <- vector('list', length = length(dvec)) |> 
+    setNames(dvec)
+  for(d in dvec) {
+    ### d <- dvec[1]
+
+    ### Load historical and projected layers
+    hist_r <- grab_rast_layers(m = m, d = d, c = 'historical', v = 'tcb', y = c(2005, 2014))
+    proj_r <- grab_rast_layers(m = m, d = d, c = 'ssp585', v = 'tcb', y = c(2046, 2055))
+    
+    ### Calculate mean difference
+    hist_r_mean <- mean(hist_r)
+    proj_r_mean <- mean(proj_r)
+    diff_r <- (proj_r_mean - hist_r_mean) / hist_r_mean
+    drv_rast_list[[d]] <- diff_r
+  }
+  if(length(drv_rast_list) > 1) {
+    diff_r <- mean(drv_rast_list[[1]], drv_rast_list[[2]])
+  }
+
+  mdl_rast_list[[m]] <- diff_r
+}
+mdl_rast <- rast(mdl_rast_list)
+```
+
+### Gapfill model layers
+
+```{r}
+rast_gapfill <- function(r, w = 3, iter = 5) {
+  if(iter == 1) {
+    r_focal <- focal(r, w = 3, fun = "mean", na.policy = "only", na.rm = TRUE)
+
+    r_filled <- cover(r, r_focal)
+    ### cover() returns r where r is non-NA, and r_focal elsewhere
+    return(r_filled)
+  }
+
+  r_filled <- r
+
+  for (i in seq_len(iter)) {
+    na_count_before <- global(is.na(r_filled), "sum")[[1]]
+    r_focal  <- focal(r_filled, w = 3, fun = "mean", na.policy = "only", na.rm = TRUE)
+    r_filled <- cover(r_filled, r_focal)
+    na_count_after <- global(is.na(r_filled), "sum")[[1]]
+    message(sprintf("Iter %d: %d NAs -> %d NAs\n", i, na_count_before, na_count_after))
+    if (all(na_count_after == 0 | na_count_after == na_count_before)) break
+  }
+  return(r_filled)
+}
+```
+
+```{r}
+mdl_rast_filled <- rast_gapfill(mdl_rast)
+```
+
+### Summarize ensemble
+
+For the ensemble model layers, reproject to Behrmann 5k resolution, mask, and calculate summary stats.  Agreement will be how many layers agree in direction of effect: 
+
+* convert to +1/-1 sign_r
+* sum sign_r
+* possible values:
+    * 0 means 3+, 3-
+    * 2 (or -2) means 4+, 2- (or 2+, 4-)
+    * 4 (or -4) means 5 in agreement
+    * 6 (or -6) means total agreement.
+
+```{r}
+isimip_f <- here('_output/impact_maps/biomass_change_ssp585_2050.tif')
+
+if(!file.exists(isimip_f)) {
+  ocean_r <- get_ocean_rast()
+
+  mdl_rast_behr <- project(mdl_rast_filled, ocean_r) |> 
+    mask(ocean_r)
+
+  mean_r <- mean(mdl_rast_behr)
+  sd_r   <- app(mdl_rast_behr, fun = "sd")
+
+  ### create a +/- raster to check agreement of direction
+  sign_r <- mdl_rast_behr / abs(mdl_rast_behr)
+  agr_r <- sum(sign_r)
+
+  isimip_r <- c(mean_r, sd_r, agr_r) |> 
+    setNames(c('mean_ssp585_2050', 'sd_ssp585_2050', 'agreement_ssp585_2050'))
+
+  writeRaster(isimip_r, isimip_f)
+}
+```

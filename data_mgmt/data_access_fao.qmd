@@ -1,5 +1,5 @@
 ---
-title: Download fisheries data from FAO and ISIMIP
+title: Download fisheries data from FAO
 author: "Casey O'Hara"
 format:
   html:
@@ -8,19 +8,13 @@ format:
 
 ## Summary
 
-Download observed fisheries statistics from FAO and projected marine biomass outputs from ISIMIP3b.
+Download observed fisheries statistics from FAO
 
 ### FAO fisheries statistics (saved to `_data/fao_2026/`)
 * Capture fisheries: https://www.fao.org/fishery/collection/capture/en
   * Direct download: https://www.fao.org/fishery/static/Data/Capture_2026.1.0.zip
 * Aquaculture production: https://www.fao.org/fishery/collection/aquaculture/en
   * Direct download: https://www.fao.org/fishery/static/Data/Aquaculture_2026.1.0.zip
-
-### ISIMIP3b EcoOcean projections (saved to `_data/isimip_2026/`)
-* Model: EcoOcean, forced with GFDL-ESM4 under SSP5-8.5
-* Data portal: https://data.isimip.org/search/tree/ISIMIP3b
-* File list: `_data/isimip_2026/filelist.txt`
-
 
 ## Methods
 
@@ -59,25 +53,3 @@ if(!file.exists(aquaculture_q_f)) {
 }
 ```
 
-### Download ISIMIP netCDFs
-
-
-```{r}
-filelist <- readr::read_lines(here::here('_data/isimip_2026/filelist.txt'))
-
-data_dir <- here::here('_data/isimip_2026/rasts')
-if(!dir.exists(data_dir)) dir.create(data_dir)
-
-file_df <- data.frame(source = filelist, 
-                      dest = file.path(data_dir, basename(filelist)))
-
-for(i in 1:nrow(file_df)) {
-  ### i <- 1
-  src <- file_df$source[i]
-  dst <- file_df$dest[i]
-  if(file.exists(dst)) next()
-  
-  ### else:
-  download.file(src, dst, mode = 'wb')
-}
-```
