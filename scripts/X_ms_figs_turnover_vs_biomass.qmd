@@ -1,0 +1,291 @@
+---
+title: Map species and functional change against biomass change
+author: "Casey O'Hara"
+format:
+  html:
+    embed-resources: true
+execute:
+    warning: false
+---
+
+## Summary
+
+Compare turnover metrics against biomass change.
+
+## Data
+
+* AquaX species distribution models from Reygondeau et al. (2026). AquaX: An enhanced and revised AquaMaps framework to model marine species distributions and biodiversity. PLOS ONE, 21(2), e0335823. https://doi.org/10.1371/journal.pone.0335823
+* Function entities from O'Hara et al. (2024). Cumulative human impacts on global marine fauna highlight risk to biological and functional diversity. PLOS ONE, 19(9), e0309788. https://doi.org/10.1371/journal.pone.0309788
+* Biomass projections from ISIMIP 3b
+
+## Methods
+
+* Rasterize the SPP and FE turnover maps
+* Rasterize the biomass projection maps
+* Ideas for potential zonal comparison:
+    * Fisheries quartiles?
+    * Turnover quartiles?
+* Other ideas for comparison
+    * Regression?
+    * PCA?
+* NOTE: should the quartile breakdowns be implemented using an equal area projection, to avoid overemphasizing arctic and antarctic regions at the expense of equatorial regions?
+    * YES! we will be using the behrmann projection, equal area cylindrical
+
+```{r}
+library(tidyverse)
+library(ggpattern)
+library(here)
+library(terra)
+library(sf)
+library(arrow)
+library(collapse)
+library(biscale)  ### for bivariate legend
+library(cowplot)
+
+source(here('common_fxns.R'))
+```
+
+### Load biomass projections
+
+Biomass change ensemble model generated in scripts `map_biomass_change.qmd`.  These are already in raster format and Behrmann projection at 5 km resolution.  
+
+Note, the "agreement" layer ranges from -6 to 6, representing the sum of signs of the ensemble model outputs.
+
+* +/- 6: all six models are in same direction
+* +/- 4: one model disagrees (e.g., 5+, 1- is +4)
+* +/- 2, or 0: two or more models disagreeing
+
+
+
+```{r biomass change}
+biomass_r <- rast(here('_output/impact_maps/biomass_change_ssp585_2050.tif'))
+biomass_r[[1]][biomass_r[[1]] > .4] <- .4 ### cap at +40% - only affects 0.003 of data
+
+biomass_df <- as.data.frame(biomass_r, xy = TRUE)
+
+### set up low-confidence polygons
+lo_conf_r <- biomass_r[[3]]
+lo_conf_r[abs(lo_conf_r) >= 4] <- NA
+lo_conf_sf <- as.polygons(lo_conf_r, aggregate = TRUE, values = FALSE) |> 
+  st_as_sf()
+```
+
+### Read in and rasterize turnover metrics
+
+These rasters were created in scripts 3 (spp turnover) and 4 (fe turnover) in the Behrmann projection.
+
+```{r read rasts}
+
+spp_turn_r <- rast(here('_output/spp_turnover_maps/all_spp_turnover.tif'))
+fe_turn_r  <- rast(here('_output/fe_turnover_maps/all_fe_turnover.tif'))
+
+# plot(spp_turn_r); plot(fe_turn_r)
+```
+
+## Generate Manuscript Figures
+
+### Map biomass including agreement
+
+Use cross hatching to indicate moderate agreement (5 models), no crosshatching to indicate disagreement 
+
+```{r}
+pal <- hcl.colors(n = 3, palette = 'Red-Green')
+
+### convenience function for putting crosshatching on maps
+geom_lowconf_hash <- function() {
+  list(geom_sf_pattern(data = lo_conf_sf, 
+                  fill = NA, color = NA, ### hide sf lines
+                  pattern = 'stripe',
+                  pattern_fill = 'grey30',
+                  pattern_color = NA,
+                  pattern_angle = 30,
+                  pattern_density = .1,
+                  pattern_spacing = .02))
+}
+
+biomass_map <- ggplot(biomass_df) +
+  geom_raster(aes(x = x, y = y, fill = mean_ssp585_2050)) +
+  map_theme() +
+  geom_lowconf_hash() +
+  scale_fill_gradient2(low = pal[1], mid = 'grey90', high = pal[3],
+                       limits = c(-.4, .4),
+                       breaks = c(-0.4, 0, 0.4), labels = c('-40%', '0', '>+40%')) +
+  guides(alpha = 'none') +
+  labs(fill = 'biomass\nchange')
+ 
+biomass_map
+```
+
+### Map biomass vs turnover
+
+Here let's do a bivariate plot to compare areas of reduced biomass to high/low projected turnover.
+
+Keep turnover metrics in their original 0-1 values.  For FE, this means few if any cells in the top quartile since few if any locations have 75%-100% functional turnover.
+
+For biomass reduction, let's bin as -40 to -25, -25 to -10, -10 to 0, 0+ (or similar).
+
+```{r process to quartiles}
+fe_turn_biomass_f  <- here('_output/figure_data/fig_fe_turnover_biomass.parquet')
+spp_turn_biomass_f <- here('_output/figure_data/fig_spp_turnover_biomass.parquet')
+
+if(any(!file.exists(c(fe_turn_biomass_f, spp_turn_biomass_f)))) {
+  biomass_qtile <- biomass_r[[1]] |> 
+    setNames('biomass_rcp85')
+  fe_turn_qtile <- spp_turn_qtile <- spp_turn_r ### initialize three new maps
+
+  ### Set breaks for biomass:
+  x <- values(biomass_qtile)
+  x <- x[!is.na(x)];   x_pos <- x[x >= 0];   x_neg <- x[x < 0]
+  biomass_thresh <- c(-.4, -.1, -.05, 0)
+
+  ### NOTE - setting so positive values --> 1, lowest negative --> 4
+  values(biomass_qtile) <- data.table::fcase(values(biomass_qtile) <= biomass_thresh[2], 4L,
+                                             values(biomass_qtile) <= biomass_thresh[3], 3L,
+                                             values(biomass_qtile) <= biomass_thresh[4], 2L,
+                                             !is.na(values(biomass_qtile)), 1L)
+
+  ### Set breaks for turnover
+  ### Note: since turnover is a physical thing, just set as .25, .5, .75 and call it a day.
+  ### Set zero turnover to be category 1
+  values(fe_turn_qtile)  <- ceiling(values(fe_turn_r * 4))
+  fe_turn_qtile[fe_turn_qtile == 0] <- 1
+  values(spp_turn_qtile) <- ceiling(values(spp_turn_r * 4))
+  spp_turn_qtile[spp_turn_qtile == 0] <- 1
+
+  fe_turn_biomass_df <- as.data.frame(c(fe_turn_qtile, biomass_qtile), xy = TRUE) %>%
+    rename(fe_turn_rcp45 = rcp45_2050, fe_turn_rcp85 = rcp85_2050) %>%
+    mutate(bi_class_rcp45 = paste(fe_turn_rcp45, biomass_rcp85, sep = '-'),
+           bi_class_rcp85 = paste(fe_turn_rcp85, biomass_rcp85, sep = '-'))
+  spp_turn_biomass_df <- as.data.frame(c(spp_turn_qtile, biomass_qtile), xy = TRUE) %>%
+    rename(spp_turn_rcp45 = rcp45_2050, spp_turn_rcp85 = rcp85_2050) %>%
+    mutate(bi_class_rcp45 = paste(spp_turn_rcp45, biomass_rcp85, sep = '-'),
+           bi_class_rcp85 = paste(spp_turn_rcp85, biomass_rcp85, sep = '-'))
+
+  write_parquet(fe_turn_biomass_df,  fe_turn_biomass_f)
+  write_parquet(spp_turn_biomass_df, spp_turn_biomass_f)
+}
+
+fe_turn_biomass_df  <- read_parquet(fe_turn_biomass_f)
+spp_turn_biomass_df <- read_parquet(spp_turn_biomass_f)
+
+```
+
+```{r set up biplot}
+calc_biplot_pcts <- function(df, scenario = 'rcp45') {
+  df_sum <- df %>% 
+    select(bi_class = all_of(paste0('bi_class_', scenario))) %>%
+    fsubset(!grepl('NA', bi_class)) %>%
+    fcount(bi_class) %>%
+    mutate(pct = N / sum(N)) %>%
+    separate_wider_delim(bi_class, names = c('turn', 'biomass'), delim = '-') %>%
+    mutate(turn = as.integer(turn), biomass = as.integer(biomass),
+           lbl = paste0(round(pct, 3) * 100, '%'),
+           dark = biomass >= 3 & turn >= 3)
+}
+fe_turn_pcts_rcp45 <- fe_turn_biomass_df %>%
+  calc_biplot_pcts(scenario = 'rcp45')
+spp_turn_pcts_rcp45 <- spp_turn_biomass_df %>%
+  calc_biplot_pcts(scenario = 'rcp45')
+```
+```{r build palette}
+
+map_pal_raw <- bi_pal(pal = 'GrPink2', dim = 4, preview = FALSE)
+  
+map_pal_mtx      <- matrix(map_pal_raw, nrow = 4, ncol = 4)
+map_pal_mtx[3, ] <- colorspace::lighten(map_pal_mtx[3, ], .1)
+map_pal_mtx[2, ] <- colorspace::lighten(map_pal_mtx[2, ], .2)
+map_pal_mtx[1, ] <- colorspace::lighten(map_pal_mtx[1, ], .3)
+map_pal_mtx[ , 3] <- colorspace::lighten(map_pal_mtx[ , 3], .1)
+map_pal_mtx[ , 2] <- colorspace::lighten(map_pal_mtx[ , 2], .2)
+map_pal_mtx[ , 1] <- colorspace::lighten(map_pal_mtx[ , 1], .3)
+map_pal_mtx[1, 1] <- '#ffffee'
+
+map_pal <- as.vector(map_pal_mtx) %>% setNames(names(map_pal_raw))
+
+pnl_lgd_fe <- bi_legend(pal = map_pal, dim = 4,
+                        x = 'Functional turnover (%)',
+                        y = 'Biomass decrease (%)') +
+  geom_text(data = fe_turn_pcts_rcp45, 
+            aes(x = turn, y = biomass, label = lbl, color = dark),
+            size = 3, show.legend = FALSE) +
+  scale_color_manual(values = c('grey20', 'white')) +
+  theme(axis.text = element_text(size = rel(.7))) + 
+  scale_x_continuous(
+    breaks = c(1, 2, 3, 4),
+    labels = c("[0, .25)", "[25, 50)", "[50, 75)", "[75, 100]")
+  ) +
+  scale_y_continuous(
+    breaks = c(1, 2, 3, 4),
+    labels = c("gain", "[0, -5)",  "[-5, -10)", "[-10, -40]")
+  )
+
+pnl_lgd_spp <- bi_legend(pal = map_pal, dim = 4,
+                        x = 'Species turnover (%)',
+                        y = 'Biomass decrease (%)') +
+  geom_text(data = spp_turn_pcts_rcp45, 
+            aes(x = turn, y = biomass, label = lbl, color = dark),
+            size = 3, show.legend = FALSE) +
+  scale_color_manual(values = c('grey20', 'white')) +
+  theme(axis.text = element_text(size = rel(.7))) + 
+  scale_x_continuous(
+    breaks = c(1, 2, 3, 4),
+    labels = c("[0, .25)", "[25, 50)", "[50, 75)", "[75, 100]")
+  ) +
+  scale_y_continuous(
+    breaks = c(1, 2, 3, 4),
+    labels = c("gain", "[0, -5)",  "[-5, -10)", "[-10, -40]")
+  )
+```
+
+#### FE turnover vs biomass, RCP4.5
+```{r fe_45}
+panel_fe_45 <- plot_map(data = fe_turn_biomass_df, fill_var = bi_class_rcp45) +
+  geom_lowconf_hash() +
+  bi_scale_fill(pal = map_pal, dim = 4) +
+  theme(axis.text = element_blank(), 
+        axis.title = element_blank(),
+        legend.position = 'none')
+
+# panel_fe_45
+```
+
+
+#### Spp turnover vs biomass, RCP4.5
+```{r spp_45}
+panel_spp_45 <- plot_map(data = spp_turn_biomass_df, fill_var = bi_class_rcp45) +
+  geom_lowconf_hash() +
+  bi_scale_fill(pal = map_pal, dim = 4) +
+  theme(axis.text = element_blank(), 
+        axis.title = element_blank(),
+        legend.position = 'none')
+
+# panel_spp_45
+```
+
+
+#### Assemble turnover X biomass figure
+
+Figure shows RCP4.5 spp and FE turnover vs. biomass.  Biomass are same, but FE turnover will be less than SPP turnover.
+
+```{r pull panels}
+# panel_a <- get_panel(panel_spp_45)
+# panel_b <- get_panel(panel_fe_45)
+panel_a <- panel_spp_45
+panel_b <- panel_fe_45
+bi_lgd_fe  <- pnl_lgd_fe
+bi_lgd_spp <- pnl_lgd_spp
+```
+
+```{r assemble panels}
+fig <- ggdraw() +
+  draw_plot(pnl_lgd_spp,  x = .68, y = .55, width = .40, height = .45) +
+  draw_plot(panel_spp_45, x = .012, y = 0.5, width = .74, height = .5) +
+  draw_plot(pnl_lgd_fe,   x = .68, y = .05, width = .40, height = .45) +
+  draw_plot(panel_fe_45,  x = .012, y = 0.0, width = .74, height = .5) +
+  draw_label('A', x = 0,  y = 1.0, hjust = 0, vjust = 1, size = 16, fontface = 'bold') +
+  draw_label('B', x = 0,  y = 0.5, hjust = 0, vjust = 1, size = 16, fontface = 'bold')
+ 
+fig_file <- here('ms_figs/fig4_spp_fe_turnover_vs_biomass.png')
+ggsave(fig_file, height = 5.75, width = 9.5, dpi = 300)
+knitr::include_graphics(fig_file)
+```

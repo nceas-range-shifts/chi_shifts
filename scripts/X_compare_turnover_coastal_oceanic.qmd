@@ -1,5 +1,5 @@
 ---
-title: MS Figs coastal vs oceanic
+title: Compare turnover coastal vs oceanic
 author: "Casey O'Hara"
 format:
   html:
@@ -10,13 +10,11 @@ execute:
 
 ## Summary
 
-Generate MS figures for species and functional turnover:
+Compare species and functional turnover to see if different between coast and oceans
 
 * Species and functional richness, current and projected change
-* Species and richness projected change in richness for large predators
-    * Species and richness projected change in richness for fishery species (too similar?)
-* Spp and FE change due to extirpation and colonization
-* Overlap of SPP and FE turnover with fisheries biomass removal impacts
+* Bathymetry to determine coastal vs shallow
+
 
 
 ## Data
@@ -60,7 +58,7 @@ bathy_r_4326[bathy_r_4326 >= -200] <- 1 ### 1 is coastal
 bathy_r_4326[bathy_r_4326 < -200]  <- 2 ### 2 is oceanic
 
 bathy_r <- project(bathy_r_4326, spp_turn_r) |> 
-  round() |> 
+  round() |> ### 
   mask(spp_turn_r[[1]])
 ```
 

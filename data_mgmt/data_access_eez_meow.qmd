@@ -42,7 +42,7 @@ meow_df <- st_drop_geometry(meow_sf)
 write_csv(meow_df, file.path(meow_dir, 'meow_lookup.csv'))
 ```
 
-Rasterize marine ecoregions by code.  Projecting the shapefile introduces problems - so rasterize then reproject the raster.  Save as `meow_lookup_complete.csv`
+Rasterize marine ecoregions by code.  Projecting the shapefile introduces problems - so rasterize then reproject the raster.  Save as `meow_eco_code.tif`
 
 ```{r}
 meow_f <- here('_data/mregions_2026/meow_eco_code.tif')
@@ -57,22 +57,12 @@ The attribute table available via mregions2 is not complete.  Download directly 
 
 https://hub.arcgis.com/datasets/dc74cc4bb3bd461a9b181ac441f5f5b1_6/about
 
-### Download, rasterize, save EEZs
+and save as `meow_lookup_complete.csv`.
 
-Rasterize EEZs by code then reproject the raster.
+### Download continents shapefile
 
+Download from https://hub.arcgis.com/datasets/esri::world-continents/explore?location=-0.001769%2C0.000000%2C1.00
 ```{r}
-eez_f <- here('_data/mregions_2026/eez_mrgid.tif')
-if(!file.exists(meow_f)) {
-  eez_sf <- mrp_get('eez')
-
-  ### write out lookup table
-  eez_df <- st_drop_geometry(eez_sf)
-  write_csv(eez_df, file.path(meow_dir, 'eez_lookup.csv'))
-
-  eez_r <- rasterize(eez_sf, base_rast, field = 'mrgid') |> 
-    project(behr_rast)
-  writeRaster(eez_r, eez_f)
-}
+continents_gpkg <- here('_data/mregions_2026', 'world_continents.gpkg')
+if(!file.exists(continents_gpkg)) stop('go download the geopackage!')
 ```
-

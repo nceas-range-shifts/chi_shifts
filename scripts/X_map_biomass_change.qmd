@@ -10,9 +10,9 @@ execute:
 
 ## Summary
 
-Gather historical and projected biomass model results and summarize into a mean/sd layer.  Then, calculate a "biomass loss" layer, where 0 = no lost biomass, 1 = max lost biomass.
+Gather historical and projected biomass model results and summarize into a mean/sd layer showing relative change in biomass.
 
-Project to Behrmann 5 km and gapfill if necessary.
+Gapfill to ensure coastal coverage and then project to Behrmann 5 km.
 
 ## Data
 

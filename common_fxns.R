@@ -234,3 +234,49 @@ sample_decomp <- function(df) {
   return(summary_df)
 }
 
+
+
+# trop_df <- data.frame(x = 0, y = c(23.425, -23.425, 0)) |> xy_to_cell_id(drop = FALSE)
+### cancer: 9586800, capricorn: 16333200
+# cell_id_behr_df <- base_rast |> 
+#   setValues(1:ncell(base_rast)) |> 
+#   project(behr_rast) |> 
+#   round() |>
+#   as.data.frame(xy = TRUE) |>
+#   filter(lyr.1 %in% trop_df$cell_id)
+### cancer: 2907724.47007114; capricorn: -2907275.52992886
+
+plot_map <- function(data, fill_var) {
+  ### this creates a plot of data, given x, y in a Behrmann projection
+  data <- data |>
+    filter(!is.na({{ fill_var }}))
+  ggplot() +
+    geom_raster(data = data, aes(x, y, fill = {{ fill_var }})) +
+    map_theme()
+}
+
+map_theme <- function() {
+  if(!exists('land_sf')) {
+    land_sf <- sf::read_sf(here('_data/mregions_2026/world_continents.gpkg')) |> 
+      st_transform(crs = crs(get_ocean_rast()))
+    assign('land_sf', land_sf, envir = .GlobalEnv)
+  }
+  ### add onto a ggplot map, more flexibility in defining the
+  ### raster
+  list(
+    ### continents:
+    geom_sf(data = land_sf,
+            fill = 'grey96', color = 'grey30',
+            size = .1),
+    ### tropics and equator:
+    geom_hline(yintercept = c(2907724.470, -2907275.530),
+               linetype = 'dashed', linewidth = 0.25, color = 'grey30'),
+    geom_hline(yintercept = 0,
+               linetype = 'solid', linewidth = 0.25, color = 'grey30'),
+    ### standardized styling:
+    scale_x_continuous(expand = c(0, 0)),
+    scale_y_continuous(expand = c(0, 0)),
+    theme_void()
+  )
+}
+

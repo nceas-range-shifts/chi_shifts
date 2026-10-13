@@ -3,8 +3,6 @@
 ## Script
 `data_mgmt/data_access_bathymetry.qmd`
 
-> **Note:** This script is titled "Download data for fisheries from FAO and ISIMIP" but also handles GEBCO. Consider renaming or splitting the script.
-
 ## Contents
 - `GEBCO_2026_sub_ice_0.05.nc` — GEBCO 2026 sub-ice topo/bathymetry aggregated to 0.05° resolution
 - `GEBCO_Grid_documentation.pdf` — GEBCO documentation
