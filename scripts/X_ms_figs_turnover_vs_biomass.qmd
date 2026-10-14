@@ -45,6 +45,7 @@ library(cowplot)
 source(here('common_fxns.R'))
 ```
 
+
 ### Load biomass projections
 
 Biomass change ensemble model generated in scripts `map_biomass_change.qmd`.  These are already in raster format and Behrmann projection at 5 km resolution.  
@@ -114,6 +115,31 @@ biomass_map <- ggplot(biomass_df) +
   labs(fill = 'biomass\nchange')
  
 biomass_map
+```
+
+### Map product of biomass and turnover
+
+This will be more like an index of current overall condition - 1 is good, 0 is bad.
+
+Turn biomass loss relative to current, into proportional biomass relative to current: 1 means no change, less than 1 means loss, greater than 1 means gain in carrying capacity.
+$$b_{loss} = \frac{b_{2050}-b_{current}}{b_{current}}\\
+  b_{rel} = \frac{b_{2050}}{b_{current}} = b_{loss} + 1$$
+Then convert turnover back to similarity index: so (1 - turnover).
+
+Multiply the results: values of 1 mean no change (or positive biomass change counters loss of similarity).  Where both are low, the effects compound one another. 
+
+```{r}
+prod_df <- as.data.frame(c(biomass_r[[1]], spp_turn_r[[1]], fe_turn_r[[1]]),
+                                   xy = TRUE) |> 
+  setNames(c('x', 'y', 'biomass', 'spp_turn', 'fe_turn')) |> 
+  fmutate(biomass_prop = biomass + 1,
+          prod_spp = biomass_prop * (1 - spp_turn),
+          prod_fe  = biomass_prop * (1 - fe_turn))
+
+plot_map(data = prod_df, fill_var = prod_spp) +
+  scale_fill_viridis_c(direction = -1)
+plot_map(data = prod_df, fill_var = prod_fe) +
+  scale_fill_viridis_c(direction = -1)
 ```
 
 ### Map biomass vs turnover
@@ -207,16 +233,24 @@ pnl_lgd_fe <- bi_legend(pal = map_pal, dim = 4,
                         y = 'Biomass decrease (%)') +
   geom_text(data = fe_turn_pcts_rcp45, 
             aes(x = turn, y = biomass, label = lbl, color = dark),
+            family = 'Helvetica',
             size = 3, show.legend = FALSE) +
   scale_color_manual(values = c('grey20', 'white')) +
-  theme(axis.text = element_text(size = rel(.7))) + 
+  theme(text = element_text(family = 'Helvetica'),
+        axis.tick.length = unit(0, 'cm'),
+        axis.text = element_text(size = rel(.7)),
+        axis.text.x = element_text(margin = margin(t = 0)), ### top margin
+        axis.text.y = element_text(margin = margin(r = 0))  ### right margin
+  ) + 
   scale_x_continuous(
     breaks = c(1, 2, 3, 4),
-    labels = c("[0, .25)", "[25, 50)", "[50, 75)", "[75, 100]")
+    labels = c("[0, .25)", "[25, 50)", "[50, 75)", "[75, 100]"),
+    expand = c(0, 0)
   ) +
   scale_y_continuous(
     breaks = c(1, 2, 3, 4),
-    labels = c("gain", "[0, -5)",  "[-5, -10)", "[-10, -40]")
+    labels = c("gain", "[0, 5)",  "[5, 10)", "[10, 40]"),
+    expand = c(0, 0)
   )
 
 pnl_lgd_spp <- bi_legend(pal = map_pal, dim = 4,
@@ -224,16 +258,22 @@ pnl_lgd_spp <- bi_legend(pal = map_pal, dim = 4,
                         y = 'Biomass decrease (%)') +
   geom_text(data = spp_turn_pcts_rcp45, 
             aes(x = turn, y = biomass, label = lbl, color = dark),
+            family = 'Helvetica',
             size = 3, show.legend = FALSE) +
   scale_color_manual(values = c('grey20', 'white')) +
-  theme(axis.text = element_text(size = rel(.7))) + 
+  theme(text = element_text(family = 'Helvetica'),
+        axis.tick.length = unit(0, 'cm'),
+        axis.text = element_text(size = rel(.7)),
+        axis.text.x = element_text(margin = margin(t = 0)), ### top margin
+        axis.text.y = element_text(margin = margin(r = 0))  ### right margin
+  ) + 
   scale_x_continuous(
     breaks = c(1, 2, 3, 4),
     labels = c("[0, .25)", "[25, 50)", "[50, 75)", "[75, 100]")
   ) +
   scale_y_continuous(
     breaks = c(1, 2, 3, 4),
-    labels = c("gain", "[0, -5)",  "[-5, -10)", "[-10, -40]")
+    labels = c("gain", "[0, 5)",  "[5, 10)", "[10, 40]")
   )
 ```
 
@@ -278,9 +318,9 @@ bi_lgd_spp <- pnl_lgd_spp
 
 ```{r assemble panels}
 fig <- ggdraw() +
-  draw_plot(pnl_lgd_spp,  x = .68, y = .55, width = .40, height = .45) +
+  draw_plot(pnl_lgd_spp,  x = .68, y = .55, width = .36, height = .40) +
   draw_plot(panel_spp_45, x = .012, y = 0.5, width = .74, height = .5) +
-  draw_plot(pnl_lgd_fe,   x = .68, y = .05, width = .40, height = .45) +
+  draw_plot(pnl_lgd_fe,   x = .68, y = .05, width = .36, height = .40) +
   draw_plot(panel_fe_45,  x = .012, y = 0.0, width = .74, height = .5) +
   draw_label('A', x = 0,  y = 1.0, hjust = 0, vjust = 1, size = 16, fontface = 'bold') +
   draw_label('B', x = 0,  y = 0.5, hjust = 0, vjust = 1, size = 16, fontface = 'bold')
