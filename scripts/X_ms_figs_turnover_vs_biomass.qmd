@@ -160,8 +160,11 @@ if(any(!file.exists(c(fe_turn_biomass_f, spp_turn_biomass_f)))) {
   fe_turn_qtile <- spp_turn_qtile <- spp_turn_r ### initialize three new maps
 
   ### Set breaks for biomass:
-  x <- values(biomass_qtile)
-  x <- x[!is.na(x)];   x_pos <- x[x >= 0];   x_neg <- x[x < 0]
+  # x <- values(biomass_qtile); quantile(x, c(.25, .5, .75))
+  #          25%         50%         75% 
+  #  -0.11225004 -0.06233479 -0.02017238 
+  # quantile_fxn <- ecdf(x); quantile_fxn(c(-.10, -.05, 0))
+  # [1] 0.3007701 0.5687596 0.8267221
   biomass_thresh <- c(-.4, -.1, -.05, 0)
 
   ### NOTE - setting so positive values --> 1, lowest negative --> 4
@@ -170,13 +173,25 @@ if(any(!file.exists(c(fe_turn_biomass_f, spp_turn_biomass_f)))) {
                                              values(biomass_qtile) <= biomass_thresh[4], 2L,
                                              !is.na(values(biomass_qtile)), 1L)
 
-  ### Set breaks for turnover
-  ### Note: since turnover is a physical thing, just set as .25, .5, .75 and call it a day.
-  ### Set zero turnover to be category 1
-  values(fe_turn_qtile)  <- ceiling(values(fe_turn_r * 4))
-  fe_turn_qtile[fe_turn_qtile == 0] <- 1
-  values(spp_turn_qtile) <- ceiling(values(spp_turn_r * 4))
-  spp_turn_qtile[spp_turn_qtile == 0] <- 1
+  ### Set breaks for turnover - use values, not quartiles
+  # x <- values(spp_turn_r); quantile(x, c(.25, .5, .75), na.rm = TRUE)
+  #       25%       50%       75% 
+  # 0.2808638 0.3867612 0.5319232 
+  # quantile_fxn <- ecdf(values(spp_turn_r)); quantile_fxn(c(.15, .25, .5))
+  # [1] 0.06780601 0.18575249 0.70237057
+  # quantile_fxn <- ecdf(values(fe_turn_r));  quantile_fxn(c(.15, .25, .5))
+  # [1] 0.2892683 0.6515390 0.9699684
+
+  set_turnover_breaks <- function(r, breaks = c(.15, .25, .5)) {
+    v <- values(r) |> as.vector()
+    x <- case_when(v < breaks[1] ~ 1,
+                   v < breaks[2] ~ 2,
+                   v < breaks[3] ~ 3,
+                   !is.na(v) ~ 4,
+                   TRUE ~ NA_integer_)
+  }
+  values(fe_turn_qtile)  <- set_turnover_breaks(fe_turn_r)
+  values(spp_turn_qtile) <- set_turnover_breaks(spp_turn_r)
 
   fe_turn_biomass_df <- as.data.frame(c(fe_turn_qtile, biomass_qtile), xy = TRUE) %>%
     rename(fe_turn_rcp45 = rcp45_2050, fe_turn_rcp85 = rcp85_2050) %>%
@@ -237,7 +252,7 @@ theme_legend <- function() {
           axis.text.x = element_text(margin = margin(t = 0)),
           axis.text.y = element_text(margin = margin(r = 0))),
     scale_x_continuous(breaks = c(1, 2, 3, 4),
-                      labels = c("[0, .25)", "[25, 50)", "[50, 75)", "[75, 100]"),
+                      labels = c("[0, 15)", "[15, 25)", "[25, 50)", "[50, 100]"),
                       expand = c(0, 0)),
     scale_y_continuous(breaks = c(1, 2, 3, 4),
                       labels = c("gain", "[0, 5)",  "[5, 10)", "[10, 40]"),

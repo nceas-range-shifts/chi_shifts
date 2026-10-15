@@ -1,5 +1,5 @@
 ---
-title: "Compare species/FE turnover and biomass declines across regions"
+title: "Compare species/FE turnover across regions"
 author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
 output: 
   html_document:
@@ -26,21 +26,19 @@ source(here('common_fxns.R'))
 
 # Summary
 
-Examine distribution of projected species and functional entity (FE) turnover (or similarity), and biomass reduction (or relative biomass), within regions (MEOW realm/province), split by coastal (neritic) vs. open ocean (oceanic).
+Examine distribution of projected species and functional entity (FE) turnover (or similarity) within regions (MEOW realm/province), split by coastal (neritic) vs. open ocean (oceanic).
 
 # Methods
 
 ## Load turnover and biomass rasters
 
-Species and FE turnover rasters (created in scripts 3 and 4) and the biomass reduction raster are already in Behrmann equal-area projection at 5 km resolution. Use the RCP4.5 scenario throughout. Include species/FE richness (also RCP4.5) to drop cells where richness falls below a threshold (20), to ensure turnover values are based on a reasonable number of taxa. Include a coastal/oceanic mask (from GEBCO bathymetry, <= 200 m = coastal) and a MEOW ecoregion raster to facilitate the by-region comparison.
+Species and FE turnover rasters (created in community and functional change scripts) are already in Behrmann equal-area projection at 5 km resolution. Use the RCP4.5 scenario throughout. Include species/FE richness (also RCP4.5) to drop cells where richness falls below a threshold (20), to ensure turnover values are based on a reasonable number of taxa. Include a coastal/oceanic mask (from GEBCO bathymetry, <= 200 m = coastal) and a MEOW ecoregion raster to facilitate the by-region comparison.
 
 ```{r build analysis dataframe}
 spp_turn_r  <- rast(here('_output/spp_turnover_maps/all_spp_turnover.tif'))[['rcp45_2050']] %>%
   setNames('spp_turnover')
 fe_turn_r   <- rast(here('_output/fe_turnover_maps/all_fe_turnover.tif'))[['rcp45_2050']] %>%
   setNames('fe_turnover')
-biomass_r <- rast(here('_output/impact_maps/biomass_change_ssp585_2050.tif'))[[1]] %>%
-  setNames('biomass')
 
 nspp_r <- rast(here('_output/spp_turnover_maps/all_spp_richness.tif'))[['rcp45_2050']] %>%
   setNames('nspp')
@@ -60,13 +58,12 @@ coastal_r <- project(bathy_r_4326, spp_turn_r) %>%
 meow_r <- rast(here('_data/mregions_2026/meow_eco_code.tif')) %>%
   setNames('eco_code')
 
-turnover_df <- c(spp_turn_r, fe_turn_r, biomass_r, nspp_r, nfe_r, coastal_r, meow_r) %>%
+turnover_df <- c(spp_turn_r, fe_turn_r, nspp_r, nfe_r, coastal_r, meow_r) %>%
   as.data.frame(xy = TRUE) %>%
-  fmutate(coastal = ifelse(coastal == 1, 'neritic', 'oceanic')) |> 
-  fmutate(biomass = ifelse(biomass > 0.4, .4, biomass)) ### .003 of data are extreme values
+  fmutate(coastal = ifelse(coastal == 1, 'neritic', 'oceanic'))
 ```
 
-## Examine turnover and impacts by ecoregion
+## Examine turnover by ecoregion
 
 ```{r set up MEOW realm and province lookup}
 meow_lookup <- read_csv(here('_data/mregions_2026/meow_lookup_complete.csv'), 
@@ -103,26 +100,17 @@ meow_turnover_df <- turnover_df %>%
 
 ### Pivot longer
 
-Unlike the CHI data, the spp and fe turnover metrics and biomass change metrics are all pretty normally distributed.  Let's use raw turnover scores (0-1) and relative biomass (0-1.4).  Relative biomass won't actually go below ~.6, and is capped at 1.4 to eliminate a few extreme outliers.
+Unlike the CHI data, the spp and fe turnover metrics are all pretty normally distributed.  Let's use raw turnover scores (0-1).
 
 ```{r build species and FE long dataframes}
-build_long_df <- function(df, turn_col, rich_col, rich_thresh = 20) {
-  ### note dot notation - can't use |> pipe
-  df %>%
-    filter(.data[[rich_col]] >= rich_thresh) %>%
+
+long_df <- meow_turnover_df %>%
+    # filter(nspp >= 20) %>%
     ### use turnover as-is (scale 0-1), biomass as 1 + reduction
-    mutate(simil = 1 - .[[turn_col]],
-           biom  = .$biomass + 1) %>%
-    select(prov_lbl, realm_lbl, coastal, simil, biom) %>%
-    pivot_longer(names_to = 'metric', values_to = 'score', cols = c(simil, biom)) %>%
+    select(prov_lbl, realm_lbl, coastal, spp = spp_turnover, fe = fe_turnover) %>%
+    pivot_longer(names_to = 'metric', values_to = 'score', cols = c(spp, fe)) %>%
     mutate(zone = ifelse(coastal == 'neritic', 'c', 'o'),
            method_zone = paste(metric, zone, sep = '_'))
-}
-
-spp_long_df <- meow_turnover_df %>%
-  build_long_df(turn_col = 'spp_turnover', rich_col = 'nspp')
-fe_long_df  <- meow_turnover_df %>%
-  build_long_df(turn_col = 'fe_turnover', rich_col = 'nfe')
 ```
 
 ### Plot by realm
@@ -148,29 +136,29 @@ add_global_realm <- function(df) {
     mutate(realm_lbl = fct_inorder(realm_lbl) %>% fct_rev())
 }
 
-spp_prov_df  <- spp_long_df %>% order_by_prov_median()
-fe_prov_df   <- fe_long_df  %>% order_by_prov_median()
+prov_df  <- long_df %>% order_by_prov_median()
 
-spp_realm_df <- spp_prov_df %>% add_global_realm()
-fe_realm_df  <- fe_prov_df  %>% add_global_realm()
+realm_df <- prov_df %>% add_global_realm()
 ```
 
 ``` {r plot function for turnover and impact by realm}
 plot_realm <- function(df, x_label) {
   
   div_clr <- c('#e66101', '#5e3c99')
-  fills <- c(div_clr[1], 'white', div_clr[2], 'white')
-  clrs  <- c(div_clr[1], div_clr[1], div_clr[2], div_clr[2])
-  
-  lbls <- c(simil_c = latex2exp::TeX('$Similarity_c$'),
-            simil_o = latex2exp::TeX('$Similarity_o$'),
-            biom_c = latex2exp::TeX('$Biomass_c$'),
-            biom_o = latex2exp::TeX('$Biomass_o$'))
+  fills <- c(div_clr[1], colorspace::lighten(div_clr[1], .7), 
+             div_clr[2], colorspace::lighten(div_clr[2], .7))
+  clrs  <- c(div_clr[1], div_clr[1],
+             div_clr[2], div_clr[2])
+  lbls <- c(spp_c = latex2exp::TeX('$Spp_{coastal}$'),
+            spp_o = latex2exp::TeX('$Spp_{ocean}$'),
+            fe_c = latex2exp::TeX('$FE_{coastal}$'),
+            fe_o = latex2exp::TeX('$FE_{ocean}$'))
 
   plot_df <- df %>%
     mutate(method_zone = factor(method_zone, levels = names(lbls)) |> fct_rev())
 
   means_df <- plot_df %>%
+    drop_na() %>%
     group_by(realm_lbl, method_zone) %>%
     summarize(mean = mean(score, na.rm = TRUE), 
               med  = median(score, na.rm = TRUE),
@@ -179,7 +167,8 @@ plot_realm <- function(df, x_label) {
   ggplot(plot_df, 
          aes(y = realm_lbl, x = score, 
              fill = method_zone, color = method_zone)) +
-    geom_boxplot(width = .4, position = position_dodge(width = .75),
+    geom_boxplot(width = .4, 
+                 position = position_dodge(width = .75),
                  outlier.shape = NA, 
                  size = .25) +
     geom_point(data = means_df,
@@ -209,40 +198,10 @@ plot_realm <- function(df, x_label) {
           legend.title = element_blank())
 }
 
-panel_a <- plot_realm(df = spp_realm_df, x_label = 'Species similarity / relative biomass')
-panel_b <- plot_realm(df = fe_realm_df,  x_label = 'FE similarity / relative biomass')
-
-# panel_a; panel_b
-```
-
-#### assemble into two panel figure
-
-```{r assemble figure realm}
-panel_a_plot <- panel_a + theme(legend.position = 'none')
-panel_b_plot <- panel_b + 
-  theme(legend.position = 'none',
-        axis.text.y = element_blank())
-panel_a_lgd  <- get_legend(panel_a)
-
-### parameterize legend position for easier changing of label positions:
-lgd_a_xy <- c(x = .90, y = .30, h = .40, w = .10)
-
-fig4 <- ggdraw() +
-  ### draw panels:
-  draw_plot(panel_a_plot,  x = 0.00, y = 0.00, height = 1.00, width = 0.52) +
-  draw_plot(panel_b_plot,  x = 0.52, y = 0.00, height = 1.00, width = 0.38) +
-  ### draw legend:
-  draw_plot(panel_a_lgd, x = lgd_a_xy['x'], y = lgd_a_xy['y'], 
-            height = lgd_a_xy['h'], width = lgd_a_xy['w']) +
-  ### Panel labels:
-  draw_label('A.', x = 0.002, y = .99, hjust = 0, vjust = 1, 
-             size = 12, fontfamily = 'Arial', fontface = 'bold') +
-  draw_label('B.', x = 0.525, y = .99, hjust = 0, vjust = 1, 
-             size = 12, fontfamily = 'Arial', fontface = 'bold')
-
+fig4 <- plot_realm(df = realm_df, x_label = 'Turnover')
 
 fig4_file <- here('ms_figs/fig4_turnover_biomass_by_ecoregion.png')
-ggsave(fig4_file, width = 6.25, height = 5.2, units = 'in', dpi = 300)
+ggsave(fig4_file, width = 3.5, height = 5.2, units = 'in', dpi = 300)
 
 knitr::include_graphics(fig4_file)
 ```
