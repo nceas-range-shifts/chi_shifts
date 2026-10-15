@@ -228,6 +228,23 @@ map_pal_mtx[1, 1] <- '#ffffee'
 
 map_pal <- as.vector(map_pal_mtx) %>% setNames(names(map_pal_raw))
 
+theme_legend <- function() {
+  list(
+    scale_color_manual(values = c('grey20', 'white')),
+    theme(text = element_text(family = 'Helvetica'),
+          axis.ticks.length = unit(0, 'cm'),
+          axis.text = element_text(size = rel(.7)),
+          axis.text.x = element_text(margin = margin(t = 0)),
+          axis.text.y = element_text(margin = margin(r = 0))),
+    scale_x_continuous(breaks = c(1, 2, 3, 4),
+                      labels = c("[0, .25)", "[25, 50)", "[50, 75)", "[75, 100]"),
+                      expand = c(0, 0)),
+    scale_y_continuous(breaks = c(1, 2, 3, 4),
+                      labels = c("gain", "[0, 5)",  "[5, 10)", "[10, 40]"),
+                      expand = c(0, 0))
+  )
+}
+
 pnl_lgd_fe <- bi_legend(pal = map_pal, dim = 4,
                         x = 'Functional turnover (%)',
                         y = 'Biomass decrease (%)') +
@@ -235,23 +252,8 @@ pnl_lgd_fe <- bi_legend(pal = map_pal, dim = 4,
             aes(x = turn, y = biomass, label = lbl, color = dark),
             family = 'Helvetica',
             size = 3, show.legend = FALSE) +
-  scale_color_manual(values = c('grey20', 'white')) +
-  theme(text = element_text(family = 'Helvetica'),
-        axis.tick.length = unit(0, 'cm'),
-        axis.text = element_text(size = rel(.7)),
-        axis.text.x = element_text(margin = margin(t = 0)), ### top margin
-        axis.text.y = element_text(margin = margin(r = 0))  ### right margin
-  ) + 
-  scale_x_continuous(
-    breaks = c(1, 2, 3, 4),
-    labels = c("[0, .25)", "[25, 50)", "[50, 75)", "[75, 100]"),
-    expand = c(0, 0)
-  ) +
-  scale_y_continuous(
-    breaks = c(1, 2, 3, 4),
-    labels = c("gain", "[0, 5)",  "[5, 10)", "[10, 40]"),
-    expand = c(0, 0)
-  )
+  theme_legend()
+
 
 pnl_lgd_spp <- bi_legend(pal = map_pal, dim = 4,
                         x = 'Species turnover (%)',
@@ -260,21 +262,7 @@ pnl_lgd_spp <- bi_legend(pal = map_pal, dim = 4,
             aes(x = turn, y = biomass, label = lbl, color = dark),
             family = 'Helvetica',
             size = 3, show.legend = FALSE) +
-  scale_color_manual(values = c('grey20', 'white')) +
-  theme(text = element_text(family = 'Helvetica'),
-        axis.tick.length = unit(0, 'cm'),
-        axis.text = element_text(size = rel(.7)),
-        axis.text.x = element_text(margin = margin(t = 0)), ### top margin
-        axis.text.y = element_text(margin = margin(r = 0))  ### right margin
-  ) + 
-  scale_x_continuous(
-    breaks = c(1, 2, 3, 4),
-    labels = c("[0, .25)", "[25, 50)", "[50, 75)", "[75, 100]")
-  ) +
-  scale_y_continuous(
-    breaks = c(1, 2, 3, 4),
-    labels = c("gain", "[0, 5)",  "[5, 10)", "[10, 40]")
-  )
+  theme_legend()
 ```
 
 #### FE turnover vs biomass, RCP4.5
@@ -318,9 +306,9 @@ bi_lgd_spp <- pnl_lgd_spp
 
 ```{r assemble panels}
 fig <- ggdraw() +
-  draw_plot(pnl_lgd_spp,  x = .68, y = .55, width = .36, height = .40) +
+  draw_plot(pnl_lgd_spp,  x = .69, y = .55, width = .36, height = .40) +
   draw_plot(panel_spp_45, x = .012, y = 0.5, width = .74, height = .5) +
-  draw_plot(pnl_lgd_fe,   x = .68, y = .05, width = .36, height = .40) +
+  draw_plot(pnl_lgd_fe,   x = .69, y = .05, width = .36, height = .40) +
   draw_plot(panel_fe_45,  x = .012, y = 0.0, width = .74, height = .5) +
   draw_label('A', x = 0,  y = 1.0, hjust = 0, vjust = 1, size = 16, fontface = 'bold') +
   draw_label('B', x = 0,  y = 0.5, hjust = 0, vjust = 1, size = 16, fontface = 'bold')

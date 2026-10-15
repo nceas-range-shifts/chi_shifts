@@ -1,5 +1,5 @@
 ---
-title: "Compare species/FE turnover and fisheries impact across regions"
+title: "Compare species/FE turnover and biomass declines across regions"
 author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
 output: 
   html_document:
@@ -7,13 +7,7 @@ output:
     toc: true
     toc_depth: 3
     toc_float: yes
-    number_sections: true
-    theme: cerulean
-    highlight: haddock
-    includes: 
-      in_header: 'https://raw.githubusercontent.com/oharac/src/master/templates/ohara_hdr.html'
-  pdf_document:
-    toc: true
+    embed-resources: true
 ---
 
 ``` {r setup, echo = TRUE, message = FALSE, warning = FALSE}
@@ -23,6 +17,7 @@ knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.height 
 library(terra)
 library(data.table)
 library(tidyverse)
+library(collapse)
 library(cowplot)
 library(here)
 source(here('common_fxns.R'))
@@ -31,21 +26,21 @@ source(here('common_fxns.R'))
 
 # Summary
 
-Examine distribution of projected species and functional entity (FE) turnover, and fisheries biomass-removal impact, within regions (MEOW realm/province), split by coastal (neritic) vs. open ocean (oceanic).
+Examine distribution of projected species and functional entity (FE) turnover (or similarity), and biomass reduction (or relative biomass), within regions (MEOW realm/province), split by coastal (neritic) vs. open ocean (oceanic).
 
 # Methods
 
-## Load turnover and fisheries impact rasters
+## Load turnover and biomass rasters
 
-Species and FE turnover rasters (created in scripts 3 and 4) and the fisheries biomass-removal impact raster (created in the vuln/stressor/impact fisheries scripts) are already in Behrmann equal-area projection at 5 km resolution. Use the RCP4.5 scenario throughout. Include species/FE richness (also RCP4.5) to drop cells where richness falls below a threshold (20), to ensure turnover values are based on a reasonable number of taxa. Include a coastal/oceanic mask (from GEBCO bathymetry, <= 200 m = coastal) and a MEOW ecoregion raster to facilitate the by-region comparison.
+Species and FE turnover rasters (created in scripts 3 and 4) and the biomass reduction raster are already in Behrmann equal-area projection at 5 km resolution. Use the RCP4.5 scenario throughout. Include species/FE richness (also RCP4.5) to drop cells where richness falls below a threshold (20), to ensure turnover values are based on a reasonable number of taxa. Include a coastal/oceanic mask (from GEBCO bathymetry, <= 200 m = coastal) and a MEOW ecoregion raster to facilitate the by-region comparison.
 
 ```{r build analysis dataframe}
 spp_turn_r  <- rast(here('_output/spp_turnover_maps/all_spp_turnover.tif'))[['rcp45_2050']] %>%
   setNames('spp_turnover')
 fe_turn_r   <- rast(here('_output/fe_turnover_maps/all_fe_turnover.tif'))[['rcp45_2050']] %>%
   setNames('fe_turnover')
-fish_impact_r <- rast(here('_output/impact_maps/biomass_removal_impact.tif'))[['impact_total']] %>%
-  setNames('fish_impact')
+biomass_r <- rast(here('_output/impact_maps/biomass_change_ssp585_2050.tif'))[[1]] %>%
+  setNames('biomass')
 
 nspp_r <- rast(here('_output/spp_turnover_maps/all_spp_richness.tif'))[['rcp45_2050']] %>%
   setNames('nspp')
@@ -65,9 +60,10 @@ coastal_r <- project(bathy_r_4326, spp_turn_r) %>%
 meow_r <- rast(here('_data/mregions_2026/meow_eco_code.tif')) %>%
   setNames('eco_code')
 
-turnover_df <- c(spp_turn_r, fe_turn_r, fish_impact_r, nspp_r, nfe_r, coastal_r, meow_r) %>%
+turnover_df <- c(spp_turn_r, fe_turn_r, biomass_r, nspp_r, nfe_r, coastal_r, meow_r) %>%
   as.data.frame(xy = TRUE) %>%
-  mutate(coastal = ifelse(coastal == 1, 'neritic', 'oceanic'))
+  fmutate(coastal = ifelse(coastal == 1, 'neritic', 'oceanic')) |> 
+  fmutate(biomass = ifelse(biomass > 0.4, .4, biomass)) ### .003 of data are extreme values
 ```
 
 ## Examine turnover and impacts by ecoregion
@@ -105,16 +101,20 @@ meow_turnover_df <- turnover_df %>%
   filter(!is.na(prov_lbl))
 ```
 
-Build separate long-format dataframes for the species panel and the FE panel: each is filtered by its own richness threshold, then turnover and fisheries impact are each converted to a 0-100 percentile (within the filtered set) so the two differently-scaled metrics can share a common axis. Four categories result per region: turnover-coastal, turnover-oceanic, fisheries impact-coastal, fisheries impact-oceanic.
+### Pivot longer
+
+Unlike the CHI data, the spp and fe turnover metrics and biomass change metrics are all pretty normally distributed.  Let's use raw turnover scores (0-1) and relative biomass (0-1.4).  Relative biomass won't actually go below ~.6, and is capped at 1.4 to eliminate a few extreme outliers.
 
 ```{r build species and FE long dataframes}
 build_long_df <- function(df, turn_col, rich_col, rich_thresh = 20) {
+  ### note dot notation - can't use |> pipe
   df %>%
     filter(.data[[rich_col]] >= rich_thresh) %>%
-    mutate(turn  = ntile(.data[[turn_col]], n = 1000) / 10,
-           fish  = ntile(fish_impact, n = 1000) / 10) %>%
-    select(prov_lbl, realm_lbl, coastal, turn, fish) %>%
-    pivot_longer(names_to = 'metric', values_to = 'pctile', cols = c(turn, fish)) %>%
+    ### use turnover as-is (scale 0-1), biomass as 1 + reduction
+    mutate(simil = 1 - .[[turn_col]],
+           biom  = .$biomass + 1) %>%
+    select(prov_lbl, realm_lbl, coastal, simil, biom) %>%
+    pivot_longer(names_to = 'metric', values_to = 'score', cols = c(simil, biom)) %>%
     mutate(zone = ifelse(coastal == 'neritic', 'c', 'o'),
            method_zone = paste(metric, zone, sep = '_'))
 }
@@ -130,11 +130,11 @@ fe_long_df  <- meow_turnover_df %>%
 ```{r figure realm dataframes, fig.height = 8}
 ### Order realms by latitude - in original order, plus a "Global" pseudo-realm
 
-order_by_prov_median <- function(df, order_zone = 'turn_c') {
+order_by_prov_median <- function(df, order_zone = 'simil_c') {
   prov_order <- df %>%
     filter(method_zone == order_zone) %>%
     group_by(prov_lbl, realm_lbl) %>%
-    summarize(med = median(pctile, na.rm = TRUE), .groups = 'drop') %>%
+    summarize(med = median(score, na.rm = TRUE), .groups = 'drop') %>%
     arrange(realm_lbl, med) %>%
     pull(prov_lbl)
   df %>% mutate(prov_lbl = factor(prov_lbl, levels = prov_order))
@@ -159,25 +159,25 @@ fe_realm_df  <- fe_prov_df  %>% add_global_realm()
 plot_realm <- function(df, x_label) {
   
   div_clr <- c('#e66101', '#5e3c99')
-  fills <- c(div_clr[1], div_clr[2],  'white', 'white')
-  clrs  <- c(div_clr[1], div_clr[2], div_clr[1], div_clr[2])
+  fills <- c(div_clr[1], 'white', div_clr[2], 'white')
+  clrs  <- c(div_clr[1], div_clr[1], div_clr[2], div_clr[2])
   
-  lbls <- c(turn_c = latex2exp::TeX('$Turn_c$'),
-            fish_c = latex2exp::TeX('$Fish_c$'),
-            turn_o = latex2exp::TeX('$Turn_o$'),
-            fish_o = latex2exp::TeX('$Fish_o$'))
+  lbls <- c(simil_c = latex2exp::TeX('$Similarity_c$'),
+            simil_o = latex2exp::TeX('$Similarity_o$'),
+            biom_c = latex2exp::TeX('$Biomass_c$'),
+            biom_o = latex2exp::TeX('$Biomass_o$'))
 
   plot_df <- df %>%
     mutate(method_zone = factor(method_zone, levels = names(lbls)) |> fct_rev())
 
   means_df <- plot_df %>%
     group_by(realm_lbl, method_zone) %>%
-    summarize(mean = mean(pctile, na.rm = TRUE), 
-              med  = median(pctile, na.rm = TRUE),
+    summarize(mean = mean(score, na.rm = TRUE), 
+              med  = median(score, na.rm = TRUE),
               .groups = 'drop')
   
   ggplot(plot_df, 
-         aes(y = realm_lbl, x = pctile, 
+         aes(y = realm_lbl, x = score, 
              fill = method_zone, color = method_zone)) +
     geom_boxplot(width = .4, position = position_dodge(width = .75),
                  outlier.shape = NA, 
@@ -194,7 +194,7 @@ plot_realm <- function(df, x_label) {
                        breaks = names(lbls), 
                        labels = lbls,
                        guide = guide_legend(label.position = 'left')) +
-    scale_x_continuous(limits = c(0, 100), expand = c(0, 0)) +
+    # scale_x_continuous(limits = c(-2, 2), expand = c(0, 0)) +
     theme_minimal() +
     labs(x = x_label) +
     theme(text = element_text(family = 'Arial'),
@@ -209,8 +209,8 @@ plot_realm <- function(df, x_label) {
           legend.title = element_blank())
 }
 
-panel_a <- plot_realm(df = spp_realm_df, x_label = 'Species turnover / fisheries impact (%ile)')
-panel_b <- plot_realm(df = fe_realm_df,  x_label = 'FE turnover / fisheries impact (%ile)')
+panel_a <- plot_realm(df = spp_realm_df, x_label = 'Species similarity / relative biomass')
+panel_b <- plot_realm(df = fe_realm_df,  x_label = 'FE similarity / relative biomass')
 
 # panel_a; panel_b
 ```
@@ -241,7 +241,7 @@ fig4 <- ggdraw() +
              size = 12, fontfamily = 'Arial', fontface = 'bold')
 
 
-fig4_file <- here('ms_figs/fig4_turnover_fisheries_by_ecoregion.png')
+fig4_file <- here('ms_figs/fig4_turnover_biomass_by_ecoregion.png')
 ggsave(fig4_file, width = 6.25, height = 5.2, units = 'in', dpi = 300)
 
 knitr::include_graphics(fig4_file)
@@ -253,24 +253,24 @@ knitr::include_graphics(fig4_file)
 plot_prov <- function(df, x_label, strips) {
 
   div_clr <- c('#e66101', '#5e3c99')
-  fills <- c('white', 'white', div_clr[2], div_clr[1])
-  clrs  <- c(div_clr[2], div_clr[1], div_clr[2], div_clr[1])
+  fills <- c(div_clr[1], 'white', div_clr[2], 'white')
+  clrs  <- c(div_clr[1], div_clr[1], div_clr[2], div_clr[2])
 
-  lbls <- c(turn_c = latex2exp::TeX('$Turn_c$'),
-            fish_c = latex2exp::TeX('$Imp_c$'),
-            turn_o = latex2exp::TeX('$Turn_o$'),
-            fish_o = latex2exp::TeX('$Imp_o$'))
+  lbls <- c(simil_c = latex2exp::TeX('$Similarity_c$'),
+            simil_o = latex2exp::TeX('$Similarity_o$'),
+            biomass_c = latex2exp::TeX('$Biomass_c$'),
+            biomass_o = latex2exp::TeX('$Biomass_o$'))
 
   plot_df <- df %>%
     mutate(method_zone = factor(method_zone, levels = names(lbls)))
   means_df <- plot_df %>%
     group_by(realm_lbl, prov_lbl, method_zone) %>%
-    summarize(mean = mean(pctile, na.rm = TRUE), 
-              med  = median(pctile, na.rm = TRUE),
+    summarize(mean = mean(score, na.rm = TRUE), 
+              med  = median(score, na.rm = TRUE),
               .groups = 'drop')
   
   p <- ggplot(plot_df, 
-              aes(y = prov_lbl, x = pctile, fill = method_zone, color = method_zone))
+              aes(y = prov_lbl, x = score, fill = method_zone, color = method_zone))
   if(strips) {
     p <- p + geom_vline(xintercept = 100, color = 'black', size = 2)
   }
@@ -320,11 +320,11 @@ plot_prov <- function(df, x_label, strips) {
 }
 
 panel_a_SI <- plot_prov(df = spp_prov_df, 
-                        x_label = 'Species turnover / fisheries impact (%ile)',
+                        x_label = 'Species similarity / relative biomass',
                         strips = FALSE)
 
 panel_b_SI <- plot_prov(df = fe_prov_df, 
-                        x_label = 'FE turnover / fisheries impact (%ile)',
+                        x_label = 'FE similarity / relative biomass',
                         strips = TRUE)
 
 ```
@@ -355,7 +355,7 @@ fig_SI <- ggdraw() +
              size = 9, fontfamily = 'Arial', fontface = 'bold')
 
 
-figSI_file <- here('ms_figs/figS5_turnover_fisheries_by_ecoregion_province.png')
+figSI_file <- here('ms_figs/figS5_turnover_biomass_by_ecoregion_province.png')
 ggsave(figSI_file, width = 18, height = 26.67, units = 'cm', dpi = 300)
 
 knitr::include_graphics(figSI_file)
