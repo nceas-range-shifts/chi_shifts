@@ -1,0 +1,241 @@
+---
+title: "MS Fig 1: spp and functional richness"
+author: "Casey O'Hara"
+format:
+  html:
+    embed-resources: true
+execute:
+    warning: false
+---
+
+## Summary
+
+Generate MS figures for species and functional turnover:
+
+* Species and functional richness, current and projected change
+
+
+## Data
+
+* AquaX species distribution models from Reygondeau et al. (2026). AquaX: An enhanced and revised AquaMaps framework to model marine species distributions and biodiversity. PLOS ONE, 21(2), e0335823. https://doi.org/10.1371/journal.pone.0335823
+* Function entities from O'Hara et al. (2024). Cumulative human impacts on global marine fauna highlight risk to biological and functional diversity. PLOS ONE, 19(9), e0309788. https://doi.org/10.1371/journal.pone.0309788
+
+## Methods
+
+```{r}
+library(tidyverse)
+library(here)
+library(terra)
+library(sf)
+library(collapse)
+library(cowplot)
+
+source(here('common_fxns.R'))
+```
+
+### Read in and rasterize turnover metrics
+
+THese rasters were created in scripts 3 (spp turnover) and 4 (fe turnover) in the Behrmann projection.
+
+```{r read rasts}
+
+spp_turn_r <- rast(here('_output/spp_turnover_maps/all_spp_turnover.tif'))
+fe_turn_r  <- rast(here('_output/fe_turnover_maps/all_fe_turnover.tif'))
+
+# plot(spp_turn_r); plot(fe_turn_r)
+```
+
+## Generate Manuscript Figures
+
+
+### Fig. 1: Map of SPP and FE richness
+
+Current and change 
+```{r spp and fe richness OLD}
+#| eval: false
+fig1_f <- here('ms_figs/fig1_spp_fe_richness.png')
+
+# if(!file.exists(fig1_f)) {
+  nspp_r <- rast(here('_output/spp_turnover_maps/all_spp_richness.tif'))
+  nfe_r  <- rast(here('_output/fe_turnover_maps/all_fe_richness.tif'))
+
+  ### Diverging palette from magenta to dark green, with yellow tone
+  ### in middle - based on hcl.colors(pal = 'Red-Green')
+  div_pal <- c("#841859", "#FFFFEE", "#005600")
+
+  nspp_df <- as.data.frame(nspp_r, xy = TRUE) %>%
+    fmutate(log_n = log10(spp_r_current),
+            diff_rcp45_2050 = (rcp45_2050 - spp_r_current) / spp_r_current, 
+            diff_rcp85_2050 = (rcp85_2050 - spp_r_current) / spp_r_current) %>%
+    ### Treat anything over 1 as 1(+) (Inf: zero spp now 1), 
+    ### Treat NaN as zero (zero spp still zero)
+    fmutate(log_n = ifelse(is.infinite(log_n), NA, log_n)) |>
+    fmutate(diff_rcp45_2050 = case_when((diff_rcp45_2050 > 1) ~ 1,
+                                        is.nan(diff_rcp45_2050) ~ 0,
+                                        TRUE ~ diff_rcp45_2050)) %>%
+    fmutate(diff_rcp85_2050 = case_when((diff_rcp85_2050 > 1) ~ 1,
+                                        is.nan(diff_rcp85_2050) ~ 0,
+                                        TRUE ~ diff_rcp85_2050))
+
+  nfe_df  <- as.data.frame(nfe_r, xy = TRUE) %>%
+    fmutate(log_n = log10(fe_r_current),
+            diff_rcp45_2050 = (rcp45_2050 - fe_r_current) / fe_r_current, 
+            diff_rcp85_2050 = (rcp85_2050 - fe_r_current) / fe_r_current) %>% 
+    fmutate(log_n = ifelse(is.infinite(log_n), NA, log_n)) |>
+    fmutate(diff_rcp45_2050 = case_when((diff_rcp45_2050 > 1) ~ 1,
+                                        is.nan(diff_rcp45_2050) ~ 0,
+                                        TRUE ~ diff_rcp45_2050)) %>%
+    fmutate(diff_rcp85_2050 = case_when((diff_rcp85_2050 > 1) ~ 1,
+                                        is.nan(diff_rcp85_2050) ~ 0,
+                                        TRUE ~ diff_rcp85_2050))
+    
+  nspp_max <- max(nspp_df$spp_r_current)
+  nfe_max  <- max(nfe_df$fe_r_current)
+  
+  nspp_panel <- plot_map(data = nspp_df |> filter(!is.infinite(log_n)), 
+                         fill_var = log_n) +
+    scale_fill_viridis_c(breaks = c(0, 1, 2, 3, log10(nspp_max)), 
+                         labels = c(1, 10, 100, 1000, nspp_max)) +
+    theme(text = element_text(size = 9)) +
+    labs(fill = expression(N[spp]))
+
+  nfe_panel <- plot_map(data = nfe_df, 
+                         fill_var = log_n) +
+    scale_fill_viridis_c(breaks = c(0, 1, 2, log10(nfe_max)), 
+                        labels = c(1, 10, 100, nfe_max)) +
+    theme(text = element_text(size = 9)) +
+    labs(fill = expression(N[FE]))
+
+  dspp_panel <- plot_map(data = nspp_df, 
+                         fill_var = diff_rcp45_2050) +
+    scale_fill_gradient2(low = div_pal[1], mid = div_pal[2], 
+                        high = div_pal[3], midpoint = 0,
+                        breaks = c(-1, -.5, 0, .5, 1),
+                        labels = c('-100%', '-50%', '0%', '50%', '≥100%')) +
+    theme(text = element_text(size = 9)) +
+    labs(fill = expression('∆' * N[spp]))
+
+
+  dfe_panel <- plot_map(data = nfe_df, 
+                        fill_var = diff_rcp45_2050) +
+    scale_fill_gradient2(low = div_pal[1], mid = div_pal[2], 
+                        high = div_pal[3], midpoint = 0,
+                        breaks = c(-1, -.5, 0, .5, 1),
+                        labels = c('-100%', '-50%', '0%', '50%', '≥100%')) +
+    theme(text = element_text(size = 9)) +
+    labs(fill = expression('∆' * N[FE]))
+
+  dspp_legend <- plot_marginal(data = nspp_df, var = diff_rcp45_2050, data_range = c(-1, 1))
+  dfe_legend  <- plot_marginal(data = nfe_df,  var = diff_rcp45_2050, data_range = c(-1, 1))
+
+
+  p <- ggdraw() +
+    draw_plot(nfe_panel,  x = .015, y = 0.0, height = .5, width = .48) +
+    draw_plot(dfe_panel,  x = 0.51, y = 0.0, height = .5, width = .48) +
+    draw_plot(nspp_panel, x = .015, y = .50, height = .5, width = .48) +
+    draw_plot(dspp_panel, x = 0.51, y = .50, height = .5, width = .48) +
+    draw_label('A', x = 0.00, y = 0.99, vjust = 1, hjust = 0, size = 12, fontface = 'bold') +
+    draw_label('B', x = .505, y = 0.99, vjust = 1, hjust = 1, size = 12, fontface = 'bold') +
+    draw_label('C', x = 0.00, y = 0.49, vjust = 1, hjust = 0, size = 12, fontface = 'bold') +
+    draw_label('D', x = .505, y = 0.49, vjust = 1, hjust = 1, size = 12, fontface = 'bold')
+
+  ggsave(fig1_f, height = 3.8, width = 10, dpi = 300)
+# }
+knitr::include_graphics(fig1_f)
+```
+
+```{r spp and fe richness NEW}
+fig1_f <- here('ms_figs/fig1_spp_fe_richness.png')
+
+# if(!file.exists(fig1_f)) {
+  nspp_r <- rast(here('_output/spp_turnover_maps/all_spp_richness.tif'))
+  nfe_r  <- rast(here('_output/fe_turnover_maps/all_fe_richness.tif'))
+
+  ### Diverging palette from magenta to dark green, with yellow tone
+  ### in middle - based on hcl.colors(pal = 'Red-Green')
+  div_pal <- c("#841859", "#FFFFEE", "#005600")
+
+  nspp_df <- as.data.frame(nspp_r, xy = TRUE) %>%
+    fmutate(log_n = log10(spp_r_current),
+            diff_rcp45_2050 = (rcp45_2050 - spp_r_current) / spp_r_current, 
+            diff_rcp85_2050 = (rcp85_2050 - spp_r_current) / spp_r_current) %>%
+    ### Treat anything over 1 as 1(+) (Inf: zero spp now 1), 
+    ### Treat NaN as zero (zero spp still zero)
+    fmutate(log_n = ifelse(is.infinite(log_n), NA, log_n)) |>
+    fmutate(diff_rcp45_2050 = case_when((diff_rcp45_2050 > 1) ~ 1,
+                                        is.nan(diff_rcp45_2050) ~ 0,
+                                        TRUE ~ diff_rcp45_2050)) %>%
+    fmutate(diff_rcp85_2050 = case_when((diff_rcp85_2050 > 1) ~ 1,
+                                        is.nan(diff_rcp85_2050) ~ 0,
+                                        TRUE ~ diff_rcp85_2050))
+
+  nfe_df  <- as.data.frame(nfe_r, xy = TRUE) %>%
+    fmutate(log_n = log10(fe_r_current),
+            diff_rcp45_2050 = (rcp45_2050 - fe_r_current) / fe_r_current, 
+            diff_rcp85_2050 = (rcp85_2050 - fe_r_current) / fe_r_current) %>% 
+    fmutate(log_n = ifelse(is.infinite(log_n), NA, log_n)) |>
+    fmutate(diff_rcp45_2050 = case_when((diff_rcp45_2050 > 1) ~ 1,
+                                        is.nan(diff_rcp45_2050) ~ 0,
+                                        TRUE ~ diff_rcp45_2050)) %>%
+    fmutate(diff_rcp85_2050 = case_when((diff_rcp85_2050 > 1) ~ 1,
+                                        is.nan(diff_rcp85_2050) ~ 0,
+                                        TRUE ~ diff_rcp85_2050))
+    
+  nspp_max <- max(nspp_df$spp_r_current)
+  nfe_max  <- max(nfe_df$fe_r_current)
+
+  dspp_panel <- plot_map(data = nspp_df, 
+                         fill_var = diff_rcp45_2050) +
+    scale_fill_gradient2(low = div_pal[1], mid = div_pal[2], 
+                        high = div_pal[3], midpoint = 0,
+                        breaks = c(-1, -.5, 0, .5, 1),
+                        labels = c('-100%', '-50%', '0%', '50%', '≥100%')) +
+    theme(text = element_text(size = 9), 
+          legend.position = 'none')
+
+  dfe_panel <- plot_map(data = nfe_df, 
+                        fill_var = diff_rcp45_2050) +
+    scale_fill_gradient2(low = div_pal[1], mid = div_pal[2], 
+                        high = div_pal[3], midpoint = 0,
+                        breaks = c(-1, -.5, 0, .5, 1),
+                        labels = c('-100%', '-50%', '0%', '50%', '≥100%')) +
+    theme(text = element_text(size = 9), 
+          legend.position = 'none')
+
+  dspp_legend <- plot_marginal(df = nspp_df, 
+                               var = diff_rcp45_2050, 
+                               data_range = c(-1, 1)) |> 
+    get_panel()
+  dfe_legend  <- plot_marginal(df = nfe_df,  
+                               var = diff_rcp45_2050, 
+                               data_range = c(-1, 1)) |> 
+    get_panel()
+
+  p <- ggdraw() +
+    draw_plot(dfe_panel,  x = 0.012, y = 0.00, width = 0.74, height = 0.49) +
+    draw_plot(dfe_legend, x = 0.810, y = 0.00, width = 0.19, height = 0.49) +
+    draw_plot(dspp_panel,   x = 0.012, y = 0.51, width = 0.74, height = 0.49) +
+    draw_plot(dspp_legend,  x = 0.810, y = 0.51, width = 0.19, height = 0.49) +
+    ### label biomass legend and axis labels (disappear with get_panel())
+    draw_label('∆ Species richness', x = 0.80, y = 0.75, 
+              hjust = .5, vjust = 0, size = 12, angle = 90,
+              fontfamily = 'Helvetica') +
+    draw_label('∆ Functional richness', x = 0.80, y = 0.25, 
+              hjust = .5, vjust = 0, size = 12, angle = 90,
+              fontfamily = 'Helvetica') +
+    draw_label('0',     x = 0.905, y = 0.5, 
+              hjust = .5, vjust = .5, size = 10,
+              fontfamily = 'Helvetica') +
+    draw_label('-100%', x = 0.81, y = 0.5, 
+              hjust = 0, vjust = .5, size = 10,
+              fontfamily = 'Helvetica') +
+    draw_label('≥+100%', x = 1, y = 0.5, 
+              hjust = 1, vjust = .5, size = 10,
+              fontfamily = 'Helvetica') +
+    draw_label('A', x = 0, y = 0.99, vjust = 1, hjust = 0, size = 12, fontface = 'bold') +
+    draw_label('B', x = 0, y = 0.49, vjust = 1, hjust = 0, size = 12, fontface = 'bold')
+
+  ggsave(fig1_f, height = 6.25, width = 10, dpi = 300)
+# }
+knitr::include_graphics(fig1_f)
+```

@@ -235,27 +235,16 @@ sample_decomp <- function(df) {
 }
 
 
-
-# trop_df <- data.frame(x = 0, y = c(23.425, -23.425, 0)) |> xy_to_cell_id(drop = FALSE)
-### cancer: 9586800, capricorn: 16333200
-# cell_id_behr_df <- base_rast |> 
-#   setValues(1:ncell(base_rast)) |> 
-#   project(behr_rast) |> 
-#   round() |>
-#   as.data.frame(xy = TRUE) |>
-#   filter(lyr.1 %in% trop_df$cell_id)
-### cancer: 2907724.47007114; capricorn: -2907275.52992886
-
-plot_map <- function(data, fill_var) {
+plot_map <- function(data, fill_var, lat_color = 'grey30') {
   ### this creates a plot of data, given x, y in a Behrmann projection
   data <- data |>
     filter(!is.na({{ fill_var }}))
   ggplot() +
     geom_raster(data = data, aes(x, y, fill = {{ fill_var }})) +
-    map_theme()
+    map_theme(lat_color = lat_color)
 }
 
-map_theme <- function() {
+map_theme <- function(lat_color = 'grey30') {
   if(!exists('land_sf')) {
     land_sf <- sf::read_sf(here('_data/mregions_2026/world_continents.gpkg')) |> 
       st_transform(crs = crs(get_ocean_rast()))
@@ -266,13 +255,13 @@ map_theme <- function() {
   list(
     ### continents:
     geom_sf(data = land_sf,
-            fill = 'grey96', color = 'grey30',
+            fill = 'grey96', color = 'grey50',
             size = .1),
     ### tropics and equator:
     geom_hline(yintercept = c(2907724.470, -2907275.530),
-               linetype = 'dashed', linewidth = 0.25, color = 'grey30'),
+               linetype = 'dashed', linewidth = 0.25, color = lat_color),
     geom_hline(yintercept = 0,
-               linetype = 'solid', linewidth = 0.25, color = 'grey30'),
+               linetype = 'solid', linewidth = 0.25, color = lat_color),
     ### standardized styling:
     scale_x_continuous(expand = c(0, 0)),
     scale_y_continuous(expand = c(0, 0)),
@@ -280,3 +269,43 @@ map_theme <- function() {
   )
 }
 
+
+plot_marginal <- function(df, var, data_range = c(-1, 1)) {
+
+  summary_df <- df |>
+    ### NOTE: fsummarize doesn't recognize {{ var }} notation
+    ### Round to nearest 50km-ish to reduce plotting load
+    mutate(y = round(y * 2, -5) / 2) |> 
+    group_by(y) |> 
+    summarize(m = fmean({{ var }}),
+              s = fsd({{ var }}),
+              max = fmax({{ var }}),
+              min = fmin({{ var }})) |> 
+    arrange(y)
+  yrange <- range(df$y)
+
+  ggplot(summary_df) +
+    geom_segment(data = data.frame(x = seq(data_range[1], data_range[2], .01)),
+                aes(x = x, color = x), linewidth = 1,
+                y = yrange[1], yend = yrange[2],
+                show.legend = FALSE) +
+    scale_color_gradient2(low = pal[1], mid = pal[2], high = pal[3],
+                          limits = data_range) +
+    geom_path(aes(x = m, y = y)) +
+    geom_ribbon(aes(xmin = min, xmax = max, y = y), alpha = .20) +
+    geom_ribbon(aes(xmin = m - s, xmax = m + s, y = y), alpha = .30) +
+    geom_vline(xintercept = 0, color = 'grey30') +
+    ### tropics and equator:
+    geom_hline(yintercept = c(2907724.470, -2907275.530),
+              linetype = 'dashed', linewidth = 0.25, color = 'grey30') +
+    geom_hline(yintercept = 0,
+              linetype = 'solid', linewidth = 0.25, color = 'grey30') +
+    scale_x_continuous(limits = data_range, 
+                      breaks = c(min(data_range), 0, max(data_range))) +
+    scale_y_continuous(expand = c(0, 0)) +
+    theme_minimal() +
+    theme(axis.text.y = element_blank(), 
+          panel.grid = element_blank(),
+          axis.text.x = element_text(family = 'Helvetica'),
+          axis.title = element_blank())
+}

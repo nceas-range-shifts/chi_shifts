@@ -56,8 +56,6 @@ Note, the "agreement" layer ranges from -6 to 6, representing the sum of signs o
 * +/- 4: one model disagrees (e.g., 5+, 1- is +4)
 * +/- 2, or 0: two or more models disagreeing
 
-
-
 ```{r biomass change}
 biomass_r <- rast(here('_output/impact_maps/biomass_change_ssp585_2050.tif'))
 biomass_r[[1]][biomass_r[[1]] > .4] <- .4 ### cap at +40% - only affects 0.003 of data
@@ -90,8 +88,8 @@ fe_turn_r  <- rast(here('_output/fe_turnover_maps/all_fe_turnover.tif'))
 Use cross hatching to indicate moderate agreement (5 models), no crosshatching to indicate disagreement 
 
 ```{r}
-pal <- hcl.colors(n = 3, palette = 'Red-Green')
-
+### pal <- hcl.colors(n = 3, palette = 'Red-Green')
+pal <- c("#841859", "#FFFFEE", "#005600")
 ### convenience function for putting crosshatching on maps
 geom_lowconf_hash <- function() {
   list(geom_sf_pattern(data = lo_conf_sf, 
@@ -104,45 +102,29 @@ geom_lowconf_hash <- function() {
                   pattern_spacing = .02))
 }
 
-biomass_map <- ggplot(biomass_df) +
-  geom_raster(aes(x = x, y = y, fill = mean_ssp585_2050)) +
-  map_theme() +
+biomass_map <- plot_map(biomass_df, fill_var = mean_ssp585_2050) +
   geom_lowconf_hash() +
-  scale_fill_gradient2(low = pal[1], mid = 'grey90', high = pal[3],
+  scale_fill_gradient2(low = pal[1], mid = pal[2], high = pal[3],
                        limits = c(-.4, .4),
-                       breaks = c(-0.4, 0, 0.4), labels = c('-40%', '0', '>+40%')) +
-  guides(alpha = 'none') +
-  labs(fill = 'biomass\nchange')
+                       breaks = c(-0.4, 0, 0.4), labels = c('-40%', '0', '≥+40%')) +
+  guides(alpha = 'none', fill = 'none') +
+  labs(fill = 'Biomass\nchange') +
+  theme(text = element_text(family = 'Helvetica'))
  
 biomass_map
 ```
 
-### Map product of biomass and turnover
+### set up biomass change marginal legend
 
-This will be more like an index of current overall condition - 1 is good, 0 is bad.
+```{r create marginal color legend}
+biomass_marg_plot <- plot_marginal(df = biomass_df,
+                                   var = mean_ssp585_2050,
+                                   data_range = c(-.4, .4))
 
-Turn biomass loss relative to current, into proportional biomass relative to current: 1 means no change, less than 1 means loss, greater than 1 means gain in carrying capacity.
-$$b_{loss} = \frac{b_{2050}-b_{current}}{b_{current}}\\
-  b_{rel} = \frac{b_{2050}}{b_{current}} = b_{loss} + 1$$
-Then convert turnover back to similarity index: so (1 - turnover).
-
-Multiply the results: values of 1 mean no change (or positive biomass change counters loss of similarity).  Where both are low, the effects compound one another. 
-
-```{r}
-prod_df <- as.data.frame(c(biomass_r[[1]], spp_turn_r[[1]], fe_turn_r[[1]]),
-                                   xy = TRUE) |> 
-  setNames(c('x', 'y', 'biomass', 'spp_turn', 'fe_turn')) |> 
-  fmutate(biomass_prop = biomass + 1,
-          prod_spp = biomass_prop * (1 - spp_turn),
-          prod_fe  = biomass_prop * (1 - fe_turn))
-
-plot_map(data = prod_df, fill_var = prod_spp) +
-  scale_fill_viridis_c(direction = -1)
-plot_map(data = prod_df, fill_var = prod_fe) +
-  scale_fill_viridis_c(direction = -1)
+biomass_marg_plot
 ```
 
-### Map biomass vs turnover
+### Map biomass vs turnover bivariate plot
 
 Here let's do a bivariate plot to compare areas of reduced biomass to high/low projected turnover.
 
@@ -252,11 +234,11 @@ theme_legend <- function() {
           axis.text.x = element_text(margin = margin(t = 0)),
           axis.text.y = element_text(margin = margin(r = 0))),
     scale_x_continuous(breaks = c(1, 2, 3, 4),
-                      labels = c("[0, 15)", "[15, 25)", "[25, 50)", "[50, 100]"),
-                      expand = c(0, 0)),
+                       labels = c("[0, 15)", "[15, 25)", "[25, 50)", "[50, 100]"),
+                       expand = c(0, 0)),
     scale_y_continuous(breaks = c(1, 2, 3, 4),
-                      labels = c("gain", "[0, 5)",  "[5, 10)", "[10, 40]"),
-                      expand = c(0, 0))
+                       labels = c("gain", "[0, 5)",  "[5, 10)", "[10, 40]"),
+                       expand = c(0, 0))
   )
 }
 
@@ -311,24 +293,45 @@ panel_spp_45 <- plot_map(data = spp_turn_biomass_df, fill_var = bi_class_rcp45) 
 Figure shows RCP4.5 spp and FE turnover vs. biomass.  Biomass are same, but FE turnover will be less than SPP turnover.
 
 ```{r pull panels}
-# panel_a <- get_panel(panel_spp_45)
-# panel_b <- get_panel(panel_fe_45)
-panel_a <- panel_spp_45
-panel_b <- panel_fe_45
-bi_lgd_fe  <- pnl_lgd_fe
-bi_lgd_spp <- pnl_lgd_spp
+# lgd_a <- get_legend(biomass_map)
+lgd_b <- pnl_lgd_spp
+lgd_c <- pnl_lgd_fe
+pnl_a <- get_panel(biomass_map)
+mrg_a <- get_panel(biomass_marg_plot)
+pnl_b <- panel_spp_45
+pnl_c <- panel_fe_45
 ```
 
 ```{r assemble panels}
 fig <- ggdraw() +
-  draw_plot(pnl_lgd_spp,  x = .69, y = .55, width = .36, height = .40) +
-  draw_plot(panel_spp_45, x = .012, y = 0.5, width = .74, height = .5) +
-  draw_plot(pnl_lgd_fe,   x = .69, y = .05, width = .36, height = .40) +
-  draw_plot(panel_fe_45,  x = .012, y = 0.0, width = .74, height = .5) +
-  draw_label('A', x = 0,  y = 1.0, hjust = 0, vjust = 1, size = 16, fontface = 'bold') +
-  draw_label('B', x = 0,  y = 0.5, hjust = 0, vjust = 1, size = 16, fontface = 'bold')
+  draw_plot(pnl_a, x = 0.012, y = 0.667, width = 0.74, height = 0.33) +
+  draw_plot(mrg_a, x = 0.810, y = 0.667, width = 0.19, height = 0.33) +
+  draw_plot(lgd_b, x = 0.695, y = 0.380, width = 0.36, height = 0.25) +
+  draw_plot(pnl_b, x = 0.012, y = 0.333, width = 0.74, height = 0.33) +
+  draw_plot(lgd_c, x = 0.695, y = 0.050, width = 0.36, height = 0.25) +
+  draw_plot(pnl_c, x = 0.012, y = 0.000, width = 0.74, height = 0.33) +
+  ### label biomass legend and axis labels (disappear with get_panel())
+  draw_label('Biomass change', x = 0.80, y = 0.833, 
+             hjust = .5, vjust = 0, size = 12, angle = 90,
+             fontfamily = 'Helvetica') +
+  draw_label('0', x = 0.905, y = 0.66, 
+             hjust = .5, vjust = 1, size = 10,
+             fontfamily = 'Helvetica') +
+  draw_label('-40%', x = 0.81, y = 0.66, 
+             hjust = 0, vjust = 1, size = 10,
+             fontfamily = 'Helvetica') +
+  draw_label('≥+40%', x = 1, y = 0.66, 
+             hjust = 1, vjust = 1, size = 10,
+             fontfamily = 'Helvetica') +
+  ### Label panels
+  draw_label('A', x = 0, y = 1.00, hjust = 0, vjust = 1, size = 12, 
+             fontfamily = 'Helvetica', fontface = 'bold') +
+  draw_label('B', x = 0, y = 0.667, hjust = 0, vjust = 1, size = 12, 
+             fontfamily = 'Helvetica', fontface = 'bold') +
+  draw_label('C', x = 0, y = 0.333, hjust = 0, vjust = 1, size = 12, 
+             fontfamily = 'Helvetica', fontface = 'bold')
  
 fig_file <- here('ms_figs/fig4_spp_fe_turnover_vs_biomass.png')
-ggsave(fig_file, height = 5.75, width = 9.5, dpi = 300)
+ggsave(fig_file, height = 9.5, width = 10, dpi = 300)
 knitr::include_graphics(fig_file)
 ```

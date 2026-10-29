@@ -209,6 +209,7 @@ knitr::include_graphics(fig4_file)
 ### Plot by province (SI)
 
 ``` {r plot function for turnover and impact by province}
+#| eval: false
 plot_prov <- function(df, x_label, strips) {
 
   div_clr <- c('#e66101', '#5e3c99')
@@ -289,6 +290,7 @@ panel_b_SI <- plot_prov(df = fe_prov_df,
 ```
 
 ```{r assemble figure SI}
+#| eval: false
 panel_a_SI_plot <- panel_a_SI + 
   theme(legend.position = 'none')
 panel_b_SI_plot <- panel_b_SI + 

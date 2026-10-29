@@ -1,0 +1,125 @@
+---
+title: "MS Fig 2: spp and functional turnover"
+author: "Casey O'Hara"
+format:
+  html:
+    embed-resources: true
+execute:
+    warning: false
+---
+
+## Summary
+
+Generate MS figures for species and functional turnover:
+
+* Spp and FE dissimilarity due to extirpation and colonization
+
+
+## Data
+
+* AquaX species distribution models from Reygondeau et al. (2026). AquaX: An enhanced and revised AquaMaps framework to model marine species distributions and biodiversity. PLOS ONE, 21(2), e0335823. https://doi.org/10.1371/journal.pone.0335823
+* Function entities from O'Hara et al. (2024). Cumulative human impacts on global marine fauna highlight risk to biological and functional diversity. PLOS ONE, 19(9), e0309788. https://doi.org/10.1371/journal.pone.0309788
+
+## Methods
+
+```{r}
+library(tidyverse)
+library(here)
+library(terra)
+library(sf)
+library(collapse)
+library(cowplot)
+
+source(here('common_fxns.R'))
+```
+
+### Read in and rasterize turnover metrics
+
+THese rasters were created in scripts 3 (spp turnover) and 4 (fe turnover) in the Behrmann projection.
+
+```{r read rasts}
+
+spp_turn_r <- rast(here('_output/spp_turnover_maps/all_spp_turnover.tif'))
+fe_turn_r  <- rast(here('_output/fe_turnover_maps/all_fe_turnover.tif'))
+
+# plot(spp_turn_r); plot(fe_turn_r)
+```
+
+## Generate Manuscript Figures
+
+### Map of turnover
+
+Compare species and FE turnover in a single plot, just examining RCP 4.5 (8.5 can go in SI?)
+```{r spp and fe turnover}
+#| eval: false
+fig_file <- here('ms_figs/figX_spp_fe_turnover.png')
+
+if(!exists(fig_file)) {
+  turnover_rasts <- c(spp_turn_r[['rcp45_2050']], fe_turn_r[['rcp45_2050']])
+  turnover_df <- as.data.frame(turnover_rasts, xy = TRUE) %>%
+    setNames(c('x', 'y', 'Species Turnover', 'Functional Entity Turnover')) %>%
+    pivot_longer(cols = -c(x, y), names_to = 'var', values_to = 'val') %>%
+    mutate(var = factor(var, levels = c('Species Turnover', 'Functional Entity Turnover'))) 
+
+  spp_fe_turnover_plot <- plot_map(data = turnover_df, fill_var = val) +
+    scale_fill_viridis_c() +
+    theme(axis.text = element_blank(), 
+          axis.title = element_blank(),
+          strip.text.y.left = element_text(angle = 90)) +
+    facet_wrap(~ var, ncol = 1, strip.position = 'left') +
+    labs(fill = expression(beta[.Sør]))
+
+  ggsave(fig_file, height = 6, width = 8, dpi = 300)
+}
+knitr::include_graphics(fig_file)
+```
+
+### Map of turnover by component
+
+Break turnover into extirpation and colonization components, plot as 4-panel.
+
+```{r spp and fe turnover components}
+fig_file <- here('ms_figs/fig2_spp_fe_turnover_components.png')
+
+# if(!file.exists(fig_file)) {
+  turnover_rasts <- c(spp_turn_r[['rcp45_2050']], fe_turn_r[['rcp45_2050']])
+
+  spp_turn_ext_r <- rast(here('_output/spp_turnover_maps/all_spp_turnover_extirp.tif'))
+  fe_turn_ext_r  <- rast(here('_output/fe_turnover_maps/all_fe_turnover_extirp.tif'))
+
+  extirp_rasts <- c(spp_turn_ext_r[['rcp45_2050']], fe_turn_ext_r[['rcp45_2050']]) %>%
+    setNames(c('SpeciesXExtirpation', 'FEXExtirpation'))
+  coloniz_rasts <- (turnover_rasts - extirp_rasts) %>%
+    setNames(c('SpeciesXColonization', 'FEXColonization'))
+
+  turn_component_rasts <- c(extirp_rasts, coloniz_rasts)
+
+  turn_comp_df <- as.data.frame(turn_component_rasts, xy = TRUE) %>%
+    pivot_longer(cols = -c(x, y), names_to = 'var', values_to = 'val') %>%
+    fmutate(unit = sub('X.+', '', var),
+            comp = sub('.+X', '', var)) %>%
+    fmutate(unit = factor(unit, levels = c('Species', 'FE')),
+            comp = factor(comp, levels = c('Extirpation', 'Colonization')))
+
+  spp_fe_turn_comp_plot <- plot_map(data = turn_comp_df, fill_var = val, lat_color = 'grey70') +
+    scale_fill_viridis_c() +
+    theme(strip.text.y.left = element_text(angle = 90),
+          axis.text = element_blank(), 
+          axis.title = element_blank(),
+          panel.spacing.x = unit(.6, 'cm')) +
+    facet_grid(unit ~ comp, switch = 'y') +
+    labs(fill = expression(beta[.Sør]))
+
+  ### Add panel letters
+  p_out <- ggdraw() +
+    draw_plot(spp_fe_turn_comp_plot, x = 0.005, y = 0, height = 1, width = .99) +
+    draw_label('A', x = 0.00, y = 0.97, hjust = 0, vjust = 1, fontface = 'bold', size = 12) +
+    draw_label('B', x = 0.47, y = 0.97, hjust = 0, vjust = 1, fontface = 'bold', size = 12) +
+    draw_label('C', x = 0.00, y = 0.48, hjust = 0, vjust = 1, fontface = 'bold', size = 12) +
+    draw_label('D', x = 0.47, y = 0.48, hjust = 0, vjust = 1, fontface = 'bold', size = 12)
+
+  ggsave(fig_file, height = 4, width = 10, dpi = 300)
+# }
+knitr::include_graphics(fig_file)
+```
+
