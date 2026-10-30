@@ -103,7 +103,9 @@ fig_file <- here('ms_figs/fig2_spp_fe_turnover_components.png')
 
   spp_fe_turn_comp_plot <- plot_map(data = turn_comp_df, fill_var = val, lat_color = 'grey70') +
     scale_fill_viridis_c() +
-    theme(strip.text.y.left = element_text(angle = 90),
+    theme(text = element_text(family = 'Helvetica'),
+          strip.text.y.left = element_text(angle = 90),
+          legend.text = element_text(size = 8),
           axis.text = element_blank(), 
           axis.title = element_blank(),
           panel.spacing.x = unit(.6, 'cm')) +
@@ -113,12 +115,16 @@ fig_file <- here('ms_figs/fig2_spp_fe_turnover_components.png')
   ### Add panel letters
   p_out <- ggdraw() +
     draw_plot(spp_fe_turn_comp_plot, x = 0.005, y = 0, height = 1, width = .99) +
-    draw_label('A', x = 0.00, y = 0.97, hjust = 0, vjust = 1, fontface = 'bold', size = 12) +
-    draw_label('B', x = 0.47, y = 0.97, hjust = 0, vjust = 1, fontface = 'bold', size = 12) +
-    draw_label('C', x = 0.00, y = 0.48, hjust = 0, vjust = 1, fontface = 'bold', size = 12) +
-    draw_label('D', x = 0.47, y = 0.48, hjust = 0, vjust = 1, fontface = 'bold', size = 12)
+    draw_label('A', x = 0.00, y = 0.95, hjust = 0, vjust = 1, 
+               fontface = 'bold', fontfamily = 'Helvetica', size = 12) +
+    draw_label('B', x = 0.46, y = 0.95, hjust = 0, vjust = 1, 
+               fontface = 'bold', fontfamily = 'Helvetica', size = 12) +
+    draw_label('C', x = 0.00, y = 0.47, hjust = 0, vjust = 1, 
+               fontface = 'bold', fontfamily = 'Helvetica', size = 12) +
+    draw_label('D', x = 0.46, y = 0.47, hjust = 0, vjust = 1, 
+               fontface = 'bold', fontfamily = 'Helvetica', size = 12)
 
-  ggsave(fig_file, height = 4, width = 10, dpi = 300)
+  ggsave(fig_file, height = 6.6, width = 17, units = 'cm', dpi = 300)
 # }
 knitr::include_graphics(fig_file)
 ```

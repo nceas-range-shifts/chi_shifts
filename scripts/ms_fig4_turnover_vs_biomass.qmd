@@ -230,7 +230,8 @@ theme_legend <- function() {
     scale_color_manual(values = c('grey20', 'white')),
     theme(text = element_text(family = 'Helvetica'),
           axis.ticks.length = unit(0, 'cm'),
-          axis.text = element_text(size = rel(.7)),
+          axis.text  = element_text(size = 6),
+          axis.title = element_text(size = 8),
           axis.text.x = element_text(margin = margin(t = 0)),
           axis.text.y = element_text(margin = margin(r = 0))),
     scale_x_continuous(breaks = c(1, 2, 3, 4),
@@ -248,7 +249,7 @@ pnl_lgd_fe <- bi_legend(pal = map_pal, dim = 4,
   geom_text(data = fe_turn_pcts_rcp45, 
             aes(x = turn, y = biomass, label = lbl, color = dark),
             family = 'Helvetica',
-            size = 3, show.legend = FALSE) +
+            size = 2.5, show.legend = FALSE) +
   theme_legend()
 
 
@@ -258,7 +259,7 @@ pnl_lgd_spp <- bi_legend(pal = map_pal, dim = 4,
   geom_text(data = spp_turn_pcts_rcp45, 
             aes(x = turn, y = biomass, label = lbl, color = dark),
             family = 'Helvetica',
-            size = 3, show.legend = FALSE) +
+            size = 2.5, show.legend = FALSE) +
   theme_legend()
 ```
 
@@ -304,34 +305,34 @@ pnl_c <- panel_fe_45
 
 ```{r assemble panels}
 fig <- ggdraw() +
-  draw_plot(pnl_a, x = 0.012, y = 0.667, width = 0.74, height = 0.33) +
-  draw_plot(mrg_a, x = 0.810, y = 0.667, width = 0.19, height = 0.33) +
-  draw_plot(lgd_b, x = 0.695, y = 0.380, width = 0.36, height = 0.25) +
-  draw_plot(pnl_b, x = 0.012, y = 0.333, width = 0.74, height = 0.33) +
-  draw_plot(lgd_c, x = 0.695, y = 0.050, width = 0.36, height = 0.25) +
-  draw_plot(pnl_c, x = 0.012, y = 0.000, width = 0.74, height = 0.33) +
+  draw_plot(pnl_a, x = 0.020, y = 0.667, width = 0.70, height = 0.33) +
+  draw_plot(mrg_a, x = 0.795, y = 0.667, width = 0.20, height = 0.33) +
+  draw_plot(lgd_b, x = 0.610, y = 0.350, width = 0.50, height = 0.29) +
+  draw_plot(pnl_b, x = 0.020, y = 0.333, width = 0.70, height = 0.33) +
+  draw_plot(lgd_c, x = 0.610, y = 0.020, width = 0.50, height = 0.29) +
+  draw_plot(pnl_c, x = 0.020, y = 0.000, width = 0.70, height = 0.33) +
   ### label biomass legend and axis labels (disappear with get_panel())
-  draw_label('Biomass change', x = 0.80, y = 0.833, 
-             hjust = .5, vjust = 0, size = 12, angle = 90,
+  draw_label('Biomass change', x = 0.79, y = 0.833, 
+             hjust = .5, vjust = 0, size = 9, angle = 90,
              fontfamily = 'Helvetica') +
-  draw_label('0', x = 0.905, y = 0.66, 
-             hjust = .5, vjust = 1, size = 10,
+  draw_label('0', x = 0.895, y = 0.66, 
+             hjust = .5, vjust = 1, size = 8,
              fontfamily = 'Helvetica') +
-  draw_label('-40%', x = 0.81, y = 0.66, 
-             hjust = 0, vjust = 1, size = 10,
+  draw_label('-40%', x = 0.795, y = 0.66, 
+             hjust = 0, vjust = 1, size = 8,
              fontfamily = 'Helvetica') +
-  draw_label('≥+40%', x = 1, y = 0.66, 
-             hjust = 1, vjust = 1, size = 10,
+  draw_label('≥40%', x = 0.995, y = 0.66, 
+             hjust = 1, vjust = 1, size = 8,
              fontfamily = 'Helvetica') +
   ### Label panels
-  draw_label('A', x = 0, y = 1.00, hjust = 0, vjust = 1, size = 12, 
+  draw_label('A', x = 0, y = 0.99, hjust = 0, vjust = 1, size = 12, 
              fontfamily = 'Helvetica', fontface = 'bold') +
-  draw_label('B', x = 0, y = 0.667, hjust = 0, vjust = 1, size = 12, 
+  draw_label('B', x = 0, y = 0.65, hjust = 0, vjust = 1, size = 12, 
              fontfamily = 'Helvetica', fontface = 'bold') +
-  draw_label('C', x = 0, y = 0.333, hjust = 0, vjust = 1, size = 12, 
+  draw_label('C', x = 0, y = 0.32, hjust = 0, vjust = 1, size = 12, 
              fontfamily = 'Helvetica', fontface = 'bold')
  
 fig_file <- here('ms_figs/fig4_spp_fe_turnover_vs_biomass.png')
-ggsave(fig_file, height = 9.5, width = 10, dpi = 300)
+ggsave(fig_file, height = 16, width = 17, units = 'cm', dpi = 300)
 knitr::include_graphics(fig_file)
 ```

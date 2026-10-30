@@ -270,7 +270,10 @@ map_theme <- function(lat_color = 'grey30') {
 }
 
 
-plot_marginal <- function(df, var, data_range = c(-1, 1)) {
+plot_marginal <- function(df, 
+                          var, 
+                          data_range = c(-1, 1), 
+                          pal = c("#841859", "#FFFFEE", "#005600")) {
 
   summary_df <- df |>
     ### NOTE: fsummarize doesn't recognize {{ var }} notation
@@ -279,8 +282,8 @@ plot_marginal <- function(df, var, data_range = c(-1, 1)) {
     group_by(y) |> 
     summarize(m = fmean({{ var }}),
               s = fsd({{ var }}),
-              max = fmax({{ var }}),
-              min = fmin({{ var }})) |> 
+              x99 = fquantile({{ var }}, probs = .99),
+              x01 = fquantile({{ var }}, probs = .01)) |> 
     arrange(y)
   yrange <- range(df$y)
 
@@ -292,8 +295,10 @@ plot_marginal <- function(df, var, data_range = c(-1, 1)) {
     scale_color_gradient2(low = pal[1], mid = pal[2], high = pal[3],
                           limits = data_range) +
     geom_path(aes(x = m, y = y)) +
-    geom_ribbon(aes(xmin = min, xmax = max, y = y), alpha = .20) +
-    geom_ribbon(aes(xmin = m - s, xmax = m + s, y = y), alpha = .30) +
+    geom_ribbon(aes(xmin = x01, xmax = x99, y = y), 
+                fill = 'grey90', alpha = .20, color = 'white', linewidth = .1) +
+    geom_ribbon(aes(xmin = m - s, xmax = m + s, y = y), 
+                fill = 'grey20', alpha = .30, color = 'grey60', linewidth = .1) +
     geom_vline(xintercept = 0, color = 'grey30') +
     ### tropics and equator:
     geom_hline(yintercept = c(2907724.470, -2907275.530),
